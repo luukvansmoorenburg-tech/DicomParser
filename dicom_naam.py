@@ -43,21 +43,28 @@ import pydicom
 def onderdeel_undersampling(ds):
     """Undersampling techniek, afgekort uit de Philips-tag (2005,1710).
 
-    Mapping (op trefwoord, dus underscores/spaties maken niet uit):
+    MotionFree (CS-SENSE MultiVANE) krijgt altijd 'MF' als prefix,
+    ongeacht de onderliggende techniek.
+
+    Overige mapping (op trefwoord):
         bevat 'AI'    -> PI   (bv. 'CS_SENSE_AI' / 'CSSENSE AI')
         bevat 'CS'    -> CS   (bv. 'CSSENSE')
         bevat 'SENSE' -> s    (bv. 'SENSE')
-
-    Tag (2005,1710) kan genest zitten, dus we zoeken op elk niveau. Valt terug
-    op de standaardtag (0018,9078) als (2005,1710) ontbreekt.
     """
+    # MotionFree = CS-SENSE MultiVANE -> 'MF' vervangt het hele undersampling-deel
+    protocol = str(ds.get("ProtocolName", "")).upper().replace(" ", "").replace("-", "").replace("_", "")
+    if "MOTIONFREE" in protocol:
+        return "MF"
+
     techniek = zoek_tag(ds, (0x2005, 0x1710),
                         "ParallelAcquisitionTechnique", (0x0018, 0x9078))
     if not techniek:
         return "noPI"   # geen parallel imaging gevonden
 
-    t = str(techniek).upper()
+    t = str(techniek).upper().replace(" ", "").replace("_", "")
     if "AI" in t:
+        return "PI"
+    if "SMARTSPEEDPREC" in t or "SMARTSPEED" in t:
         return "PI"
     if "CS" in t:
         return "CS"
@@ -95,76 +102,587 @@ def onderdeel_slicethickness(ds):
 # ---------------------------------------------------------------------------
 # 2. ACQUISITIE WEGING  -> hier zitten de if-statements die je zelf uitbreidt
 # ---------------------------------------------------------------------------
-# Logica op basis van Repetition Time (TR), Echo Time (TE) en Inversion Time (TI).
-# Drempelwaarden zijn vuistregels voor 1.5T/3T MR; pas ze aan naar wens.
+# Logica op basis van ProtocolName, ScanningSequence, TR/TE/TI, b-waarde en
+# acquisitie-type.  Drempelwaarden zijn vuistregels voor 1.5T/3T MR.
 
 # Drempels (in milliseconden) -- bovenin zodat je ze makkelijk tunet
-TR_KORT = 800        # < 800 ms  = "korte TR"
-TR_LANG = 2000       # > 2000 ms = "lange TR"
-TE_KORT = 30         # < 30 ms   = "korte TE"
-TE_LANG = 80         # > 80 ms   = "lange TE"
+
+# Spin Echo / TSE drempels
+TR_KORT  = 800       # < 800 ms  = "korte TR"
+TR_LANG  = 1500      # > 1500 ms = "lange TR"
+TE_KORT  = 30        # < 30 ms   = "korte TE"   (SE/TSE -> T1)
+TE_LANG  = 55        # > 55 ms   = "lange TE"  (SE/TSE -> T2)
+                     # 30-55 ms + lange TR -> PD
+                     # T2 begint al bij 55 ms omdat fat-sat T2 kortere TE
+                     # kan gebruiken (fatsat-puls behoudt T2-weging ook bij
+                     # kortere TE, geeft meer SNR)
+
+# Gradient Echo (FFE) drempels -- GRE gebruikt veel kortere TEs dan SE
+GRE_TE_T1      = 10  # TE < 10 ms   = T1FFE kandidaat
+GRE_TE_T2      = 15  # TE > 15 ms   = T2FFE kandidaat
+GRE_FA_T2      = 25  # flip angle < 25° = T2FFE (T2FFE ~20°, mFFE ~25°+)
+                     # mFFE wordt eerder gevangen via ETL > 1, dus geen overlap
+                     # T1FFE: geen flip angle drempel, TE < 10ms is voldoende
+
+# Inversion Recovery drempels
+TI_STIR  = 500       # TI < 500 ms  = STIR  (vet-onderdrukking)
+TI_FLAIR = 1500      # TI >= 1500 ms = FLAIR (vocht-onderdrukking)
+
+# ---------------------------------------------------------------------------
+# PROTOCOL-NAAM LOOKUP
+# ---------------------------------------------------------------------------
+# Controleer de ProtocolName-tag EERST op bekende sleutelwoorden.
+# Volgorde is van meest-specifiek naar minst-specifiek binnen elke groep,
+# zodat bv. "DWIBS" eerder matcht dan "DWI".
+# Geeft (weging, is_3d_override) terug, of None als niets matcht.
+# is_3d_override=True forceert een 3D-prefix los van de MRAcquisitionType-tag.
+
+PROTOCOL_SLEUTELWOORDEN = [
+    # -------------------------------------------------------------------------
+    # Regels: meest-specifiek EERST binnen elke groep.
+    # Spaties, koppeltekens en underscores worden vóór vergelijking verwijderd,
+    # dus "TSE-DWI", "TSE_DWI" en "TSEDWI" raken allemaal de "TSEDWI"-regel.
+    # Kolommen: (sleutelwoord, uitvoer-weging, forceer_3d_prefix)
+    # forceer_3d=True: altijd "3D" voor de weging, ook als de tag het niet zegt.
+    # -------------------------------------------------------------------------
+
+    # --- Diffusie ------------------------------------------------------------
+    ("IVIM",         "IVIM",          False),   # protocol naam only; anders DWI
+    ("DWIBS",        "DWIBS",         False),   # whole-body DWI met STIR
+    ("DTI",          "DTI",           False),   # diffusion tensor (richtingen via tag)
+    ("IRIS",         "IRIS-DWI",      False),   # Philips multi-shot productnaam
+    ("MULTISHOT",    "IRIS-DWI",      False),
+    ("TSEDWI",       "TSEDWI",        False),   # TSE readout DWI
+    ("DWITSE",       "TSEDWI",        False),
+    ("ADC",          "ADC",           False),   # berekende ADC-kaart
+    ("DWI",          "DWI",           False),   # standaard single-shot EPI DWI
+
+    # --- EPI subtypes --------------------------------------------------------
+    ("TFEEP",        "TFE-EPI",       False),   # Philips turbo field echo EPI
+    ("TFEEPI",       "TFE-EPI",       False),
+    ("TFE-EPI",      "TFE-EPI",       False),
+    ("FFEEP",        "FFE-EPI",       False),   # Philips field echo EPI
+    ("FFEEPI",       "FFE-EPI",       False),
+    ("FFE-EPI",      "FFE-EPI",       False),
+    ("SEEP",         "SE-EPI",        False),   # spin echo EPI
+    ("SEEPI",        "SE-EPI",        False),
+    ("SE-EPI",       "SE-EPI",        False),
+    ("FMRI",         "fMRI",          False),   # functional MRI
+    ("BOLD",         "fMRI",          False),   # BOLD fMRI
+
+    # --- Perfusie / vasculair ------------------------------------------------
+    # DCE/DSC: afgehandeld in STAP 0 (custom namen)
+    # DSC: afgehandeld in STAP 0 (custom naam T2*DSC)
+    # PWI/ASL: afgehandeld in STAP 0 (custom namen T2*DSC / ASL / 3dASL)
+    # TOF/MRA/PCA: afgehandeld in STAP 0 (2D/3D onderscheid)
+
+    # --- Susceptibility ------------------------------------------------------
+    # SWI/QSM: afgehandeld in STAP 0
+
+    # --- Spectroscopie -------------------------------------------------------
+    # MRS: afgehandeld in STAP 0 (SVS/CSI/MRS + techniek-suffix)
+
+    # --- Inversion Recovery --------------------------------------------------
+    ("PSIR",         "PSIR",          False),   # phase sensitive IR
+    ("DIR",          "DIR",           False),   # double inversion recovery
+    ("3DFLAIR",      "FLAIR",         True),
+    ("FLAIR",        "FLAIR",         False),
+    ("3DSTIR",       "STIR",          True),
+    ("STIR",         "STIR",          False),
+    ("IR",           "IR",            False),   # overige inversion recovery
+
+    # --- Dixon -------------------------------------------------------------------
+    ("MDIXON",       "mDixon",        False),   # Philips mDixon fat/water separatie
+    ("DIXON",        "mDixon",        False),
+
+    # --- Gradient Echo (Philips FFE-naamgeving) ------------------------------
+    ("BFFE",         "bFFE",          False),   # balanced FFE (SSFP)
+    ("SSFP",         "bFFE",          False),
+    ("FIESTA",       "bFFE",          False),   # GE-naam voor SSFP
+    ("TRUFI",        "bFFE",          False),   # Siemens-naam voor SSFP
+    ("MFFE",         "mFFE",          False),   # multi-echo FFE
+    ("T2FFE",        "T2FFE",         False),   # T2* gradient echo
+    ("T2STAR",       "T2FFE",         False),
+    ("T1FFE",        "T1FFE",         False),   # T1 gradient echo
+    ("TFE",          "TFE",           False),   # turbo field echo (Philips prep-GRE)
+    ("MPRAGE",       "T1TFE",         True),    # Siemens 3D IR-prepped GRE -> 3DT1TFE
+    ("IRTFE",        "T1TFE",         True),    # Philips IR-TFE -> 3DT1TFE
+    ("VIBE",         "T1FFE",         True),    # Siemens 3D T1 GRE breath-hold
+    ("FLASH",        "T1FFE",         False),   # Siemens GRE naam
+    ("FISP",         "T2FFE",         False),   # Siemens GRE naam
+    ("GRASS",        "T2FFE",         False),   # GE GRE naam
+    ("FFE",          "FFE",           False),   # generieke Philips gradient echo
+
+    # --- NerveView -----------------------------------------------------------
+    ("NERVEVIEW",    "NerveView",     True),    # Philips 3D black-blood TSE -> 3dNerveView
+    ("3DNV",         "NerveView",     True),    # veelgebruikte afkorting
+    ("NERVEV",       "NerveView",     True),
+
+    # --- mDixon TSE ----------------------------------------------------------
+    ("MDIXONTSE",    "T2-mDix",       False),
+    ("DIXONTSE",     "T2-mDix",       False),
+    ("TSEDIXON",     "T2-mDix",       False),
+    ("TSEMDI",       "T2-mDix",       False),
+
+    # --- UTE -----------------------------------------------------------------
+    ("UTE",          "UTE",           False),
+
+    # --- GRaSE ---------------------------------------------------------------
+    ("GRASE",        "GRaSE",         False),
+    ("GRASE3D",      "GRaSE",         True),
+
+    # --- DRIVE / RESTORE (driven equilibrium TSE) ----------------------------
+    ("DRIVE",        "T2Drive",       True),    # Philips -> 3DT2Drive
+    ("RESTORE",      "T2Drive",       True),    # Siemens equivalent
+    ("FRFSE",        "T2Drive",       True),    # GE equivalent
+
+    # Cine: afgehandeld in STAP 0 (view-suffix detectie)
+
+    # --- MRE (MR Elastography) -----------------------------------------------
+    # MRE: afgehandeld in STAP 0 (techniek-suffix)
+
+    # --- 4D Flow -------------------------------------------------------------
+    ("4DFLOW",       "4dFlow",        False),
+    ("4D_FLOW",      "4dFlow",        False),
+    ("4DPCMRA",      "4dFlow",        False),
+
+    # --- Cardiac T1 mapping --------------------------------------------------
+    ("SHMOLLI",      "T1map-ShMOLLI", False),   # meest-specifiek eerst
+    ("MOLLI",        "T1map-MOLLI",   False),
+    ("SASHA",        "T1map-SASHA",   False),
+
+    # --- VANE / MultiVANE ----------------------------------------------------
+    # 4D VANE en 3D VANE worden VOOR de protocol-lookup afgehandeld in
+    # onderdeel_weging (speciale logica voor mDixon-check en 4dFB).
+    ("MOTIONFREE",   "T2",            False),   # CS-SENSE MultiVANE; MF komt uit undersampling
+    ("MULTIVANE",    "T2MV",          False),   # SENSE MultiVANE
+
+    # --- Single Shot TSE (HASTE / SS-TSE) -----------------------------------
+    ("HASTE",        "SSh",           False),
+    ("SSTSE",        "SSh",           False),
+    ("SS-TSE",       "SSh",           False),
+    ("SSHTSE",       "SSh",           False),
+
+    # --- MRCP ----------------------------------------------------------------
+    ("MRCP",         "T2-MRCP",       False),   # zware T2 TSE (galwegen, urethra, CSF)
+
+    # Mapping: afgehandeld in STAP 0 (techniek-suffix voor T2map/T2starmap)
+
+    # --- Spin Echo / TSE / 3D varianten -------------------------------------
+    ("SPACE",        "T2",            True),    # Siemens 3D TSE
+    ("CUBE",         "T2",            True),    # GE 3D TSE
+    ("VISTA",        "T2",            True),    # Philips 3D TSE (oud)
+    ("BRAINVIEW",    "T2",            True),    # Philips 3D TSE nieuw
+    ("MSKVIEW",      "T2",            True),
+    ("SPINEVIEW",    "T2",            True),
+    ("PELVISVIEW",   "T2",            True),
+    ("BREASTVIEW",   "T2",            True),
+    ("VIEW",         "T2",            True),    # generieke Philips View catch-all
+    ("3DT2",         "T2",            True),
+    ("3DT1",         "T1",            True),
+    ("3DPD",         "PD",            True),
+    ("T2",           "T2",            False),
+    ("T1",           "T1",            False),
+    ("PD",           "PD",            False),
+]
+
+
+def protocol_naam_weging(ds):
+    """Zoek de ProtocolName op bekende sleutelwoorden (meest-specifiek eerst).
+
+    Geeft (weging_string, forceer_3d) terug, of None als niets matcht.
+    """
+    protocol = str(ds.get("ProtocolName", "")).upper().replace(" ", "")
+    if not protocol:
+        return None
+    for sleutel, weging, forceer_3d in PROTOCOL_SLEUTELWOORDEN:
+        if sleutel.replace("-", "").replace("_", "") in protocol.replace("-", "").replace("_", ""):
+            return weging, forceer_3d
+    return None
+
+
+# ---------------------------------------------------------------------------
+# DTI: aantal richtingen bepalen
+# ---------------------------------------------------------------------------
+
+def _dti_richtingen(ds):
+    """Geeft het aantal diffusie-richtingen terug, of None als onbekend.
+
+    Probeert achtereenvolgens:
+      - (0018,9089) DiffusionGradientOrientation  (geneste SQ -> items tellen)
+      - (0018,9076) DiffusionGradientDirectionSequence (idem)
+    """
+    for tag in ((0x0018, 0x9089), (0x0018, 0x9076)):
+        waarde = zoek_tag(ds, tag)
+        if waarde is not None:
+            try:
+                # Als het een Sequence is, tel de items.
+                return len(waarde)
+            except TypeError:
+                pass
+    return None
+
+
+def _dti_weging(ds):
+    """Bouw de DTI-weging-string, inclusief richtingen als die bekend zijn."""
+    n = _dti_richtingen(ds)
+    if n is not None:
+        return f"DTI_{n}dir"
+    return "DTI"
+
+
+def _mrs_weging(protocol_norm):
+    """Bouw de spectroscopie-weging: type (SVS/CSI/MRS) + techniek (PRESS/STEAM/sLASER).
+
+    Type-detectie op trefwoord in protocolnaam (meest-specifiek eerst).
+    Techniek-detectie idem; als geen techniek gevonden -> alleen het type.
+    """
+    # Type
+    if "SVS" in protocol_norm:
+        mrs_type = "SVS"
+    elif "CSI" in protocol_norm or "MRSI" in protocol_norm:
+        mrs_type = "CSI"
+    else:
+        mrs_type = "MRS"
+
+    # Techniek
+    if "SLASER" in protocol_norm or "LASER" in protocol_norm:
+        techniek = "sLASER"
+    elif "STEAM" in protocol_norm:
+        techniek = "STEAM"
+    elif "PRESS" in protocol_norm:
+        techniek = "PRESS"
+    else:
+        techniek = None
+
+    return f"{mrs_type}-{techniek}" if techniek else mrs_type
+
+
+def _mdixon_weging(img_type):
+    """Bepaal de mDixon reconstructie-subtype uit ImageType.
+
+    Philips mDixon levert aparte reconstructies: water, vet, in-fase en
+    uit-fase. Als ImageType er geen of meer dan één aangeeft, gebruiken
+    we 'mDixon-ALL'.
+    """
+    gevonden = []
+    if "WATER" in img_type:
+        gevonden.append("W")
+    if "FAT" in img_type:
+        gevonden.append("F")
+    if "IN_PHASE" in img_type or "INPHASE" in img_type:
+        gevonden.append("IP")
+    if "OUT_PHASE" in img_type or "OUTPHASE" in img_type or "OUT-PHASE" in img_type:
+        gevonden.append("OP")
+    if "DIXON" in img_type and not gevonden:
+        return "mDixon-ALL"
+    if len(gevonden) == 1:
+        return f"mDixon-{gevonden[0]}"
+    return "mDixon-ALL"
 
 
 def onderdeel_weging(ds):
     """
-    Bepaalt de acquisitie weging via if-statements.
+    Bepaalt de acquisitie-weging uit DICOM-metadata.
 
-    Voeg hier gerust extra elif-takken toe (DWI, MRA, T2*, etc.).
+    Stap 1 — ProtocolName: als die een bekend sleutelwoord bevat, direct gebruiken.
+    Stap 2 — Tag-gebaseerde logica (van specifiek naar algemeen):
+        a. ADC (afgeleid beeld)
+        b. DWI-subtypes: DWIBS / DTI / Multi Shot / TSE DWI / DWI
+        c. EPI zonder diffusie (bv. fMRI)
+        d. Inversion Recovery: STIR / FLAIR / IR
+        e. Gradient Echo (FFE): T1FFE / T2FFE / bFFE / mFFE / mDixon
+        f. Spin Echo / TSE: T1 / T2 / PD
+        g. Fallback op TR/TE
+
+    3D-prefix: MRAcquisitionType == '3D'  ->  '3D' voor de weging.
+    DWI-subtypes krijgen nooit een 3D-prefix (3D DWI bestaat niet klinisch).
     """
-    tr = _getal(ds.get("RepetitionTime", None))     # (0018,0080)
-    te = _getal(ds.get("EchoTime", None))           # (0018,0081)
-    ti = _getal(ds.get("InversionTime", None))      # (0018,0082)
-    scan_seq = str(ds.get("ScanningSequence", ""))  # (0018,0020) bv. 'IR', 'EP'
+    # --- Tags inlezen --------------------------------------------------------
+    tr       = _getal(ds.get("RepetitionTime"))
+    te       = _getal(ds.get("EchoTime"))
+    ti       = _getal(ds.get("InversionTime"))
+    scan_seq = str(ds.get("ScanningSequence", "")).upper()
+    etl      = _getal(ds.get("EchoTrainLength"))
+    acq_type = str(ds.get("MRAcquisitionType", "")).upper()
+    b_waarde = _getal(zoek_tag(ds, "DiffusionBValue", (0x0018, 0x9087)))
+    img_type = str(ds.get("ImageType", "")).upper()
 
-    # --- Inversion Recovery sequenties (TI aanwezig) -------------------------
-    if ti is not None and ti > 0:
-        if ti < 500:
-            return "STIR"           # korte TI -> vet onderdrukking
-        if ti >= 1500:
-            return "FLAIR"          # lange TI -> vocht onderdrukking
-        return "IR"                 # overige inversion recovery
+    is_3d  = acq_type == "3D"
+    is_ep  = "EP" in scan_seq
+    is_gr  = "GR" in scan_seq
+    is_se  = "SE" in scan_seq
+    is_ir  = "IR" in scan_seq or (ti is not None and ti > 0)
+    is_tse = is_se and etl is not None and etl > 1
 
-    # --- Geen geldige TR/TE -> kunnen we niets over zeggen -------------------
-    if tr is None or te is None:
+    def naam(weging, geen_3d=False):
+        if is_3d and not geen_3d:
+            return f"3D{weging}"
+        return weging
+
+    # =========================================================================
+    # STAP 0 — VANE-varianten (voor normale protocol-lookup, eigen logica)
+    # =========================================================================
+    protocol_raw = str(ds.get("ProtocolName", "")).upper()
+    protocol_norm = protocol_raw.replace(" ", "").replace("-", "").replace("_", "")
+
+    # MRE (MR Elastography): techniek-suffix uit protocolnaam of ScanningSequence
+    if "MRE" in protocol_norm or "ELASTOGRAPH" in protocol_norm:
+        if "EPI" in protocol_norm or is_ep:
+            return "MRE-EPI"
+        if "TSE" in protocol_norm or (is_se and etl is not None and etl > 1):
+            return "MRE-TSE"
+        if "SE" in protocol_norm or is_se:
+            return "MRE-SE"
+        if "GRE" in protocol_norm or "FFE" in protocol_norm or is_gr:
+            return "MRE-GRE"
+        return "MRE"
+
+    # Cine (cardiac): view-suffix op basis van protocolnaam
+    if "CINE" in protocol_norm:
+        if "2CH" in protocol_norm:
+            return "Cine2ch"
+        if "3CH" in protocol_norm:
+            return "Cine3ch"
+        if "4CH" in protocol_norm:
+            return "Cine4ch"
+        if "SAX" in protocol_norm or "SA" in protocol_norm:
+            return "CineSAX"
+        return "Cine"
+
+    # SyntAc (Synthetic MRI): 2D -> SyntAc, 3D -> 3dSyntAc
+    if "SYNTAC" in protocol_norm:
+        return "3dSyntAc" if is_3d else "SyntAc"
+
+    # DSC / PWI (Dynamic Susceptibility Contrast / Perfusion Weighted Imaging)
+    if any(k in protocol_norm for k in ("DSC", "PWI")) or ("PERFUSION" in img_type and is_ep):
+        return "T2*DSC"
+
+    # ASL (Arterial Spin Labeling): 2D -> ASL, 3D -> 3dASL
+    if "ASL" in protocol_norm or "ASL" in img_type:
+        return "3dASL" if is_3d else "ASL"
+
+    # TOF (Time of Flight): 2D -> TOF, 3D -> 3dTOF
+    if "TOF" in protocol_norm:
+        return "3dTOF" if is_3d else "TOF"
+
+    # PCA (Phase Contrast Angiography): 2D -> PCA, 3D -> 3dPCA
+    if any(k in protocol_norm for k in ("PCMRA", "PHASEC", "PCA", "PHASECONTRAST")):
+        return "3dPCA" if is_3d else "PCA"
+
+    # MRA (generieke MR Angiografie): 2D -> MRA, 3D -> 3dMRA
+    if "MRA" in protocol_norm:
+        return "3dMRA" if is_3d else "MRA"
+
+    # SWI (Susceptibility Weighted Imaging): altijd 3D -> SWIp
+    if "SWI" in protocol_norm or "SWI" in img_type:
+        return "SWIp"
+
+    # QSM (Quantitative Susceptibility Mapping): altijd 3D, alleen protocol naam
+    if "QSM" in protocol_norm or "QSM" in img_type:
+        return "QSM"
+
+    # --- Mapping sequences ---------------------------------------------------
+    if "T1MAP" in protocol_norm or "T1MAPPING" in protocol_norm:
+        return "T1map"
+
+    if "T1RHO" in protocol_norm:
+        if "BFFE" in protocol_norm or "SSFP" in protocol_norm or (is_gr and "SS" in str(ds.get("SequenceVariant", "")).upper()):
+            return "T1rho-bFFE"
+        if "TSE" in protocol_norm or (is_se and etl is not None and etl > 1):
+            return "T1rho-TSE"
+        if "FFE" in protocol_norm or is_gr:
+            return "T1rho-FFE"
+        return "T1rho"
+
+    if any(k in protocol_norm for k in ("T2STARMAP", "T2STARMAPPING")):
+        return "T2*map-mFFE"
+
+    if "T2MAP" in protocol_norm or "T2MAPPING" in protocol_norm:
+        # Techniek bepalen uit protocolnaam of ScanningSequence
+        if "GRASE" in protocol_norm or (is_gr and is_se):
+            return "T2map-GRaSE"
+        if "TSE" in protocol_norm or (is_se and etl is not None and etl > 1):
+            return "T2map-TSE"
+        return "T2map"
+
+    # MRS / SVS / CSI (Spectroscopie)
+    # SOPClassUID 1.2.840.10008.5.1.4.1.1.4.2 = MR Spectroscopy Storage
+    sop_class = str(ds.get("SOPClassUID", ""))
+    is_spectro = (sop_class == "1.2.840.10008.5.1.4.1.1.4.2" or
+                  any(k in protocol_norm for k in ("MRS", "SVS", "CSI", "MRSI",
+                                                    "SPECTRO", "STEAM", "PRESS",
+                                                    "SLASER")))
+    if is_spectro:
+        return _mrs_weging(protocol_norm)
+
+    # DCE (Dynamic Contrast Enhanced): altijd 3dT1FFE_dyn
+    if "DCE" in protocol_norm or any(k in img_type for k in ("DYNAMIC", "TIMEPOINT")):
+        return "3dT1FFE_dyn"
+
+    # 4D VANE / 4D Freebreathing
+    if "4DVANE" in protocol_norm or "4DFREEBREATHING" in protocol_norm or "4DFB" in protocol_norm:
+        return "4dFB"
+
+    # 3D VANE: check op mDixon in ImageType voor suffix
+    if "3DVANE" in protocol_norm:
+        if any(k in img_type for k in ("DIXON", "WATER", "FAT", "IN_PHASE",
+                                        "INPHASE", "OUT_PHASE", "OUTPHASE")):
+            return "3DVane_mDix"
+        return "3DVane"
+
+    # =========================================================================
+    # STAP 1 — ProtocolName heeft voorrang op alle tag-logica
+    # =========================================================================
+    protocol_hit = protocol_naam_weging(ds)
+    if protocol_hit is not None:
+        weging, forceer_3d = protocol_hit
+        # DTI: voeg richtingen toe ook als het via de protocolnaam herkend is.
+        if weging == "DTI":
+            weging = _dti_weging(ds)
+        # mDixon: verfijn naar W/F/IP/OP/ALL op basis van ImageType.
+        if weging == "mDixon":
+            weging = _mdixon_weging(img_type)
+        if forceer_3d or is_3d:
+            return f"3D{weging}"
+        return weging
+
+    # =========================================================================
+    # STAP 2 — Tag-gebaseerde detectie
+    # =========================================================================
+
+    # --- a. ADC (afgeleid/berekend beeld) ------------------------------------
+    if "ADC" in img_type or "APPARENT_DIFFUSION_COEFF" in img_type:
+        return "ADC"
+
+    # --- b. DWI-subtypes -----------------------------------------------------
+    is_diffusie = (b_waarde is not None and b_waarde > 0) or "DIFFUSION" in img_type
+    if is_diffusie:
+        # DWIBS: EPI-diffusie + InversionTime (STIR-achtige achtergrondonderdrukking)
+        if ti is not None and ti > 0:
+            return "DWIBS"
+        # DTI: meerdere richtingen aanwezig in de metadata
+        n_richtingen = _dti_richtingen(ds)
+        if n_richtingen is not None and n_richtingen > 1:
+            return _dti_weging(ds)
+        # TSE DWI: spin echo readout (geen EP) met b-waarde
+        if is_se and not is_ep:
+            return "TSEDWI"
+        # Standaard DWI (single shot EPI)
+        return "DWI"
+
+    # --- c. EPI zonder diffusie ----------------------------------------------
+    if is_ep:
+        # fMRI: ImageType bevat FMRI of BOLD
+        if "FMRI" in img_type or "BOLD" in img_type:
+            return "fMRI"
+        # ASL: ImageType bevat ASL of PERFUSION
+        if "ASL" in img_type or "PERFUSION" in img_type:
+            return "ASL"
+        # SE-EPI: spin echo readout (SE + EP)
+        if is_se:
+            return "SE-EPI"
+        # GRE-EPI: TFE-EPI vs FFE-EPI niet te onderscheiden uit standaard tags
+        # -> onbekend, handmatige popup
         return "onbekend"
 
-    # De echo-tijd (TE) is de betrouwbaarste discriminator, dus die leidt.
-    # De repetitie-tijd (TR) bevestigt alleen. Reden: een T2 TSE/FSE-opname
-    # kan een vrij korte TR hebben (~1500 ms) maar nog steeds een lange TE
-    # (~140 ms) -> dat is gewoon T2. Eisen we ook TR > 2000, dan vallen die
-    # ten onrechte in 'mixed'.
+    # --- d. Inversion Recovery -----------------------------------------------
+    if is_ir:
+        # IR-prepped gradient echo (bv. MP-RAGE, IR-TFE): TI aanwezig + GRE readout
+        # -> dit is 3D T1 TFE, geen gewone IR-sequentie
+        if is_gr:
+            return naam("T1TFE")
 
-    # --- T2*: gradient echo (korte TE) --------------------------------------
-    # Apart afvangen vóór de T1/T2-regels, want GR-echo gedraagt zich anders.
-    if "GR" in scan_seq and te < TE_LANG:
-        return "T2ster"
+        # PSIR: ImageType bevat "PSIR", of "PHASE" gecombineerd met TI
+        if "PSIR" in img_type:
+            return naam("PSIR")
+        if "PHASE" in img_type and ti is not None and ti > 0:
+            return naam("PSIR")
 
-    # --- T2 weging: lange TE ------------------------------------------------
-    if te > TE_LANG:
-        return "T2"
+        # DIR: ImageType bevat "DIR" of dubbele inversie-aanwijzing
+        if "DIR" in img_type:
+            return naam("DIR")
 
-    # --- Korte TE -> T1 of PD, afhankelijk van TR ---------------------------
-    if te < TE_KORT:
-        if tr < TR_KORT:
-            return "T1"             # korte TR + korte TE
+        # STIR / FLAIR op basis van TI-drempelwaarden
+        if ti is not None and ti > 0:
+            if ti < TI_STIR:
+                return naam("STIR")
+            if ti >= TI_FLAIR:
+                return naam("FLAIR")
+
+        # IR met onbekend TI of tussenliggende waarde zonder verdere info
+        return naam("IR")
+
+    # --- e0. GRaSE: ScanningSequence bevat zowel GR als SE -------------------
+    if is_gr and is_se:
+        return naam("GRaSE")
+
+    # --- e. Gradient Echo -> FFE-naamgeving (Philips) ------------------------
+    if is_gr:
+        # mDixon: ImageType bevat DIXON, WATER, FAT, IN_PHASE of OUT_PHASE
+        if any(k in img_type for k in ("DIXON", "WATER", "FAT", "IN_PHASE",
+                                        "INPHASE", "OUT_PHASE", "OUTPHASE")):
+            return naam(_mdixon_weging(img_type))
+        # bFFE (balanced / SSFP): SequenceVariant bevat 'SS' (steady state)
+        seq_variant = str(ds.get("SequenceVariant", "")).upper()
+        if "SS" in seq_variant:
+            return naam("bFFE")
+        # mFFE: meerdere echo's (EchoTrainLength > 1 op GRE)
+        if etl is not None and etl > 1:
+            return naam("mFFE")
+        # T1FFE: TE < 10ms is voldoende (flip angle niet betrouwbaar, range 10-45°)
+        # T2FFE: TE > 15ms én flip angle < 25° vereist
+        flip = _getal(ds.get("FlipAngle"))      # (0018,1314)
+        if te is None:
+            return naam("onbekend")
+        if te < GRE_TE_T1:
+            return naam("T1FFE")
+        if te > GRE_TE_T2:
+            if flip is not None and flip < GRE_FA_T2:
+                return naam("T2FFE")
+            return naam("onbekend")
+        # TE tussen 10-15 ms: altijd onbekend -> popup
+        return naam("onbekend")
+
+    # --- f. Spin Echo / Turbo Spin Echo --------------------------------------
+    if is_se:
+        if te is None or tr is None:
+            return naam("onbekend")
+        # mDixon TSE: ImageType bevat Dixon-sleutelwoorden op SE-sequentie
+        if any(k in img_type for k in ("DIXON", "WATER", "FAT", "IN_PHASE",
+                                        "INPHASE", "OUT_PHASE", "OUTPHASE")):
+            return naam("T2-mDix")
+        # SSh (single shot TSE / HASTE): ETL > 70
+        if etl is not None and etl > 70:
+            return "SSh"
+        # T2-MRCP: extreem lange TE (> 400 ms) op SE/TSE
+        if te > 400:
+            return "T2-MRCP"
+        if te > TE_LANG:
+            return naam("T2")
+        if te < TE_KORT and tr < TR_KORT:
+            return naam("T1")       # korte TE én korte TR -> T1
+        # 30-55 ms of lange TR -> PD
         if tr > TR_LANG:
-            return "PD"             # lange TR + korte TE
-        # tussenliggende TR met korte TE -> meestal nog steeds T1-achtig
-        return "T1"
+            return naam("PD")
+        # TE kort maar TR niet kort genoeg voor T1, of middellange TE -> onbekend
+        return naam("onbekend")
 
-    # --- Middenlange TE (30-80 ms) ------------------------------------------
-    # Korte TR -> T1-gewogen; lange TR -> richting PD; anders niet eenduidig.
-    if tr < TR_KORT:
-        return "T1"
+    # --- g. Fallback: ScanningSequence ontbreekt of onbekend -----------------
+    if tr is None or te is None:
+        return naam("onbekend")
+    if te > TE_LANG:
+        return naam("T2")
+    if te < TE_KORT and tr < TR_KORT:
+        return naam("T1")
     if tr > TR_LANG:
-        return "PD"
-    return "mixed"
+        return naam("PD")
+    return naam("mixed")
 
 
-# Wegingen waarbij het script er NIET zeker van is. Komt zo'n weging voor
-# (bv. bij een DWI, MRA of andere techniek die de TR/TE-regels niet vangen),
-# dan vragen we de naam handmatig via een popup.
-ONZEKERE_WEGINGEN = {"mixed", "onbekend"}
+# Wegingen waarbij het script er NIET zeker van is -> popup voor handmatige invoer.
+ONZEKERE_WEGINGEN = {"mixed", "onbekend", "3Dmixed", "3Donbekend",
+                     "3Dmixed", "3Donbekend"}
 
 
 def naam_is_onzeker(resultaat):
@@ -239,10 +757,93 @@ def _nummer(waarde):
 SCHEIDINGSTEKEN = "_"   # underscore-formaat
 
 
+def _is_recon(ds):
+    """True als dit een scanner-reconstructie is (MPR, subtractie, MIP, etc.).
+
+    Philips private tags:
+      (2001,101D) ReconstructionNumber: > 1 betekent een afgeleide reconstructie
+      (2001,107B) AcquisitionNumber:    aanvullend ter controle
+
+    Standaard ImageType: eerste waarde 'DERIVED' bevestigt het.
+    """
+    recon_nr = _getal(zoek_tag(ds, (0x2001, 0x101D)))
+    if recon_nr is not None and recon_nr > 1:
+        return True
+
+    img_type = str(ds.get("ImageType", "")).upper()
+    if img_type.startswith("DERIVED"):
+        return True
+
+    return False
+
+
+def _heeft_fatsat(ds):
+    """True als de sequentie een spectrale vet-onderdrukking heeft (SPAIR / SPIR).
+
+    Controleert achtereenvolgens:
+      1. ProtocolName op SPAIR, SPIR, FATSAT, of eindigt op 'FS'
+      2. SpectrallySelectedSuppression (0018,9025) = FAT of FAT_AND_WATER
+      3. SequenceVariant (0018,0021) bevat 'SP' (spectral presaturation)
+
+    STIR en mDixon worden NIET als fatsat beschouwd: STIR gebruikt een
+    inversie-puls en mDixon scheidt water/vet rekenkundig.
+    """
+    protocol = str(ds.get("ProtocolName", "")).upper().replace(" ", "").replace("-", "").replace("_", "")
+    if any(k in protocol for k in ("SPAIR", "SPIR", "FATSAT")):
+        return True
+    # Protocollen die eindigen op 'FS' (bv. 'T2FS', 'BRAINFS')
+    if protocol.endswith("FS"):
+        return True
+
+    sss = str(zoek_tag(ds, "SpectrallySelectedSuppression", (0x0018, 0x9025)) or "").upper()
+    if "FAT" in sss:
+        return True
+
+    seq_variant = str(ds.get("SequenceVariant", "")).upper()
+    if "SP" in seq_variant:
+        return True
+
+    return False
+
+
+def _heeft_mt(ds):
+    """True als de sequentie een Magnetization Transfer voorbereiding heeft.
+
+    Controleert:
+      1. ProtocolName op MT of MTR
+      2. MagnetizationTransfer (0018,9020) = ON
+      3. SequenceVariant (0018,0021) bevat MTC
+    """
+    protocol = str(ds.get("ProtocolName", "")).upper().replace(" ", "").replace("-", "").replace("_", "")
+    if "MTR" in protocol or (protocol.endswith("MT") or "_MT" in str(ds.get("ProtocolName", "")).upper()):
+        return True
+
+    mt_tag = str(zoek_tag(ds, "MagnetizationTransfer", (0x0018, 0x9020)) or "").upper()
+    if mt_tag == "ON":
+        return True
+
+    seq_variant = str(ds.get("SequenceVariant", "")).upper()
+    if "MTC" in seq_variant:
+        return True
+
+    return False
+
+
 def maak_naam(ds):
+    undersampling = onderdeel_undersampling(ds)
+    weging = onderdeel_weging(ds)
+    if _heeft_fatsat(ds):
+        weging = weging + "fs"
+    if _heeft_mt(ds):
+        weging = weging + "mt"
+
+    # Post-processed reconstructies (MPR, subtractie, MIP): geen tijd/dikte
+    if _is_recon(ds):
+        return SCHEIDINGSTEKEN.join([undersampling, weging, "recon"])
+
     delen = [
-        onderdeel_undersampling(ds),
-        onderdeel_weging(ds),
+        undersampling,
+        weging,
         onderdeel_acquisitietijd(ds),
         onderdeel_slicethickness(ds),
     ]
