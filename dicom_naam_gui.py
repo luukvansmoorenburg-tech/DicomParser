@@ -612,8 +612,6 @@ class DicomNaamApp(tk.Tk):
             te    = ds.get("EchoTime")
             dikte = ds.get("SliceThickness")
             ps    = ds.get("PixelSpacing")
-            dur   = ds.get("AcquisitionDuration") or \
-                    dn.zoek_tag(ds, "AcquisitionDuration", (0x0018, 0x9073))
             parts = []
             if tr is not None:
                 parts.append(f"TR: {float(tr):.0f} ms")
@@ -631,13 +629,10 @@ class DicomNaamApp(tk.Tk):
                     pass
             elif dikte is not None:
                 parts.append(f"Thickness: {float(dikte):.1f} mm")
-            if dur is not None:
-                try:
-                    s = round(float(dur))
-                    m, sec = divmod(s, 60)
-                    parts.append(f"Scan time: {m}m{sec:02d}s" if m else f"Scan time: {sec}s")
-                except Exception:
-                    pass
+            # Use same scan time logic as renaming script (searches nested + Philips private tag)
+            scan_time = dn.onderdeel_acquisitietijd(ds)
+            if scan_time and scan_time != "noTime":
+                parts.append(f"Scan time: {scan_time}")
             meta_lbl.config(text="   ".join(parts) if parts else "")
 
         _cache = {}
