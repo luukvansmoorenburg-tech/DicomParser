@@ -204,6 +204,10 @@ PROTOCOL_SLEUTELWOORDEN = [
     ("DIR",          "DIR",           False),   # double inversion recovery
     ("3DT1FLAIR",    "T1FLAIR",       True),
     ("T1FLAIR",      "T1FLAIR",       False),
+    ("FLAIRSSH",     "FLAIR-SSh",     False),   # Single Shot FLAIR
+    ("FLAIRHASTE",   "FLAIR-SSh",     False),
+    ("HASTEFLAIR",   "FLAIR-SSh",     False),
+    ("SSHFLAIR",     "FLAIR-SSh",     False),
     ("3DFLAIR",      "FLAIR",         True),
     ("FLAIR",        "FLAIR",         False),
     ("3DSTIR",       "STIR",          True),
@@ -483,7 +487,7 @@ def onderdeel_weging(ds):
 
     # SURVEY / LOCALIZER -> originele naam behouden (EERSTE check, vóór VIEW!)
     _survey_trefwoorden = ("SURVEY", "PLANSCAN", "LOCALIZER", "SCOUT", "MOBIVIEW",
-                           "MINIP")
+                           "MINIP", "TRANCE")
     _is_survey = any(k in protocol_norm or k in series_norm
                      for k in _survey_trefwoorden)
     if not _is_survey:
@@ -514,6 +518,19 @@ def onderdeel_weging(ds):
         if "GRE" in protocol_norm or "FFE" in protocol_norm or is_gr:
             return "MRE-GRE"
         return "MRE"
+
+    # PSIR met oriëntatie-suffix (2ch, 3ch, 4ch, SAX)
+    if "PSIR" in protocol_norm or "PSIR" in series_norm:
+        src = protocol_norm + series_norm
+        if "4CH" in src:
+            return naam("PSIR-4ch")
+        if "3CH" in src:
+            return naam("PSIR-3ch")
+        if "2CH" in src:
+            return naam("PSIR-2ch")
+        if "SAX" in src or "SA" in src:
+            return naam("PSIR-SAX")
+        # Geen oriëntatie -> gewone PSIR via protocol-lookup
 
     # Cine (cardiac): view-suffix op basis van protocolnaam
     if "CINE" in protocol_norm:
@@ -732,6 +749,9 @@ def onderdeel_weging(ds):
             if ti < TI_STIR:
                 return naam("STIR")
             if ti >= TI_FLAIR:
+                # Single Shot FLAIR: ETL > 70
+                if etl is not None and etl > 70:
+                    return naam("FLAIR-SSh")
                 # TE < 50ms = T1 FLAIR, anders gewone (T2) FLAIR
                 if te is not None and te < 50:
                     return naam("T1FLAIR")
