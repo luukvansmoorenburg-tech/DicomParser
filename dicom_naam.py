@@ -460,8 +460,10 @@ def onderdeel_weging(ds):
     # =========================================================================
     # STAP 0 — VANE-varianten (voor normale protocol-lookup, eigen logica)
     # =========================================================================
-    protocol_raw = str(ds.get("ProtocolName", "")).upper()
-    series_raw   = str(ds.get("SeriesDescription", "")).upper()
+    protocol_orig = str(ds.get("ProtocolName", ""))      # originele hoofdletters
+    series_orig   = str(ds.get("SeriesDescription", "")) # originele hoofdletters
+    protocol_raw  = protocol_orig.upper()
+    series_raw    = series_orig.upper()
     # Strip Philips WIP-prefix voor matching
     protocol_norm = protocol_raw.replace(" ", "").replace("-", "").replace("_", "")
     if protocol_norm.startswith("WIP"):
@@ -489,7 +491,7 @@ def onderdeel_weging(ds):
         _is_survey = (re.search(_loc_pattern, protocol_bound) is not None or
                       re.search(_loc_pattern, series_bound) is not None)
     if _is_survey:
-        orig = series_raw.strip() or protocol_raw.strip()
+        orig = series_orig.strip() or protocol_orig.strip()
         return orig if orig else "Survey"
 
     # EPI detectie ook op SeriesDescription als ScanningSequence geen EP bevat
@@ -679,6 +681,14 @@ def onderdeel_weging(ds):
         n_richtingen = _dti_richtingen(ds)
         if n_richtingen is not None and n_richtingen >= 6:
             return _dti_weging(ds)
+        # Afgeleide ADC-varianten (dadc, eadc, dADC etc.) -> ADC, geen TSEDWI
+        _naam_raw = (str(ds.get("SeriesDescription", "")) +
+                     str(ds.get("ProtocolName", ""))).upper()
+        if "ADC" in _naam_raw:
+            return "ADC"
+        # Serie-beschrijving is een b-waarde (b1000, b0, b800 etc.) -> standaard DWI
+        if re.match(r'^B\d+', _naam_raw.strip()):
+            return "DWI"
         # TSE DWI: spin echo readout (geen EP) met b-waarde
         if is_se and not is_ep:
             return "TSEDWI"
@@ -931,6 +941,25 @@ def _heeft_fatsat(ds):
     return False
 
 
+def _bwaarde_uit_naam(ds):
+    """Geeft 'b1000', 'b0' etc. terug als de seriebeschrijving een b-waarde bevat.
+
+    Matcht patronen als 'b1000', 'DWI b800', '50 600 1000' (meerdere b-waarden).
+    Retourneert None als geen b-waarde gevonden.
+    """
+    for veld in ("SeriesDescription", "ProtocolName"):
+        naam = str(ds.get(veld, ""))
+        # Enkelvoudige b-waarde: b1000, b0, B800
+        m = re.search(r'\bb(\d+)\b', naam, re.IGNORECASE)
+        if m:
+            return f"b{m.group(1)}"
+        # Meerdere b-waarden: '50 600 1000' (3 losse getallen)
+        getallen = re.findall(r'\b(\d+)\b', naam)
+        if len(getallen) >= 2 and all(int(g) < 5000 for g in getallen):
+            return "b" + "_".join(getallen)
+    return None
+
+
 def _heeft_bb(ds):
     """True als de ProtocolName '_BB' of 'BB' bevat (Black Blood techniek)."""
     protocol = str(ds.get("ProtocolName", "")).upper().replace(" ", "").replace("-", "").replace("_", "")
@@ -957,6 +986,13 @@ def _heeft_mt(ds):
 def maak_naam(ds):
     undersampling = onderdeel_undersampling(ds)
     weging = onderdeel_weging(ds)
+
+    # Als de weging de originele seriebeschrijving/protocolnaam is (keep-original),
+    # geef hem dan direct terug zonder prefix of suffix.
+    _serie_orig  = str(ds.get("SeriesDescription", "")).strip()
+    _prot_orig   = str(ds.get("ProtocolName", "")).strip()
+    if weging and (weging == _serie_orig or weging == _prot_orig):
+        return _veilige_mapnaam(weging)
     # Geen fs/mt suffix op DWI-familie, EPI of afgeleide beelden
     _geen_suffix_prefixen = ("DWI", "DTI", "ADC", "DWIBS", "TSEDWI", "IRIS-DWI",
                              "MultiShotDWI", "EPI", "fMRI", "ASL", "3dASL",
@@ -978,6 +1014,12 @@ def maak_naam(ds):
     bb       = ["BB"] if _heeft_bb(ds) else []
     tijd     = onderdeel_acquisitietijd(ds)
     dikte    = onderdeel_slicethickness(ds)
+
+    # B-waarde uit seriebeschrijving toevoegen voor DWI-families
+    _dwi_families = ("DWI", "DTI", "DWIBS", "TSEDWI", "IRIS-DWI")
+    _bval = _bwaarde_uit_naam(ds) if any(weging.startswith(f) for f in _dwi_families) else None
+    if _bval:
+        bb = [_bval] + bb  # b-waarde vóór BB-suffix
 
     is_recon = _is_recon(ds)
 
