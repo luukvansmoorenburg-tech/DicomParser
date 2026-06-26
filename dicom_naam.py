@@ -170,9 +170,12 @@ PROTOCOL_SLEUTELWOORDEN = [
     ("TFEEP",        "TFE-EPI",       False),   # Philips turbo field echo EPI
     ("TFEEPI",       "TFE-EPI",       False),
     ("TFE-EPI",      "TFE-EPI",       False),
-    ("FFEEP",        "FFE-EPI",       False),   # Philips field echo EPI
+    ("FFEEP",        "FFE-EPI",       False),   # Philips fast field echo EPI
     ("FFEEPI",       "FFE-EPI",       False),
     ("FFE-EPI",      "FFE-EPI",       False),
+    ("FEEPI",        "FFE-EPI",       False),   # Philips field echo EPI (FE_EPI)
+    ("FE-EPI",       "FFE-EPI",       False),
+    ("FEEP",         "FFE-EPI",       False),
     ("SEEP",         "SE-EPI",        False),   # spin echo EPI
     ("SEEPI",        "SE-EPI",        False),
     ("SE-EPI",       "SE-EPI",        False),
@@ -1168,78 +1171,70 @@ def _veilige_mapnaam(naam):
     return re.sub(r'[\\/:*?"<>|]', "_", naam).strip()
 
 
-def schrijf_naar_output(resultaten_per_bestand, output_map):
-    """Kopieer alle MR-slices naar een output-map, per serie in een submap.
+def schrijf_naar_output(resultaten_per_bestand, output_map, bron_map=None):
+    """Kopieer alle MR-slices naar output_map met behoud van de originele mapstructuur.
 
-    - Elke serie krijgt een submap genoemd naar de gegenereerde naam.
-    - Bij dubbele namen wordt _2, _3, ... toegevoegd zodat geen serie elkaar
-      overschrijft.
-    - In ELKE slice wordt tag (0018,1030) ProtocolName overschreven met de
-      nieuwe naam. De bestandsnaam wordt: <nieuwe_naam>_<volgnr>.dcm
-    - Pixeldata blijft behouden (we lezen hier het volledige bestand).
+    Alleen tag (0018,1030) ProtocolName wordt overschreven met de gegenereerde naam.
+    Bestandsnamen, mapstructuur en alle andere tags blijven ongewijzigd.
 
-    'resultaten_per_bestand' = lijst van per-bestand dicts (NIET gegroepeerd),
-    want we hebben elk los slice-pad nodig om te kopiëren.
+    'resultaten_per_bestand' = lijst van per-bestand dicts (NIET gegroepeerd).
+    'bron_map' = pad van de bronmap zodat relatieve paden bewaard blijven.
     """
-    # Groepeer de losse bestanden op serie, met behoud van volgorde.
-    series = {}
-    for r in resultaten_per_bestand:
-        uid = r.get("serie_uid") or r["bestand"]
-        series.setdefault(uid, []).append(r)
-
     os.makedirs(output_map, exist_ok=True)
 
-    gebruikte_namen = {}     # basisnaam -> hoe vaak al gebruikt (voor _2, _3)
-    totaal_bestanden = 0
+    # Bouw een lookup: bestandspad -> gegenereerde naam
+    naam_per_bestand = {r["bestand"]: r["naam"] for r in resultaten_per_bestand}
 
+    totaal_bestanden = 0
     overgeslagen = 0
 
-    for uid, slices in series.items():
-        eerste = slices[0]
+    for r in resultaten_per_bestand:
+        bronpad = r["bestand"]
+        serie_naam = r["naam"]
 
-        # Onzekere weging (bv. DWI) -> popup om de naam handmatig in te vullen.
-        if naam_is_onzeker(eerste):
-            print(f"  ? Serie {eerste.get('serienummer','?')} "
-                  f"('{eerste.get('seriebeschrijving','')}') niet automatisch "
+        # Onzekere weging -> popup
+        if naam_is_onzeker(r):
+            print(f"  ? Serie {r.get('serienummer','?')} "
+                  f"('{r.get('seriebeschrijving','')}') niet automatisch "
                   f"herkend -> popup geopend...")
-            handmatig = vraag_naam_popup(eerste)
+            handmatig = vraag_naam_popup(r)
             if not handmatig:
                 print(f"    -> overgeslagen (geen naam ingevuld).")
                 overgeslagen += 1
                 continue
-            basis = _veilige_mapnaam(handmatig)
-        else:
-            basis = _veilige_mapnaam(eerste["naam"])
+            serie_naam = handmatig
 
-        # Uniek maken bij botsing: _2, _3, ...
-        n = gebruikte_namen.get(basis, 0) + 1
-        gebruikte_namen[basis] = n
-        serie_naam = basis if n == 1 else f"{basis}_{n}"
-
-        serie_map = os.path.join(output_map, serie_naam)
-        os.makedirs(serie_map, exist_ok=True)
-
-        for i, r in enumerate(slices, start=1):
+        # Bepaal het relatieve pad ten opzichte van de bronmap
+        if bron_map:
             try:
-                # Volledig bestand lezen (mét pixeldata) zodat de kopie compleet is.
-                ds = pydicom.dcmread(r["bestand"], force=True)
-            except Exception as e:
-                print(f"  ! Kon {r['bestand']} niet lezen: {e}")
-                continue
+                rel_pad = os.path.relpath(bronpad, bron_map)
+            except ValueError:
+                rel_pad = os.path.basename(bronpad)
+        else:
+            rel_pad = os.path.basename(bronpad)
 
-            # ---- DE KERN: tag (0018,1030) ProtocolName overschrijven --------
-            ds.ProtocolName = serie_naam
-            # Voor de zekerheid ook SeriesDescription meenemen, zodat viewers
-            # die dát tonen ook de nieuwe naam laten zien. (Optioneel.)
-            # ds.SeriesDescription = serie_naam
+        doelpad = os.path.join(output_map, rel_pad)
+        os.makedirs(os.path.dirname(doelpad), exist_ok=True)
 
-            doel = os.path.join(serie_map, f"{serie_naam}_{i:04d}.dcm")
-            ds.save_as(doel)
-            totaal_bestanden += 1
+        try:
+            ds = pydicom.dcmread(bronpad, force=True)
+        except Exception as e:
+            print(f"  ! Kon {bronpad} niet lezen: {e}")
+            continue
 
-        print(f"  Serie -> {serie_naam}  ({len(slices)} slices)")
+        # Alleen ProtocolName aanpassen, niets anders
+        ds.ProtocolName = _veilige_mapnaam(serie_naam)
+        ds.save_as(doelpad)
+        totaal_bestanden += 1
 
-    geschreven_series = len(series) - overgeslagen
+    geschreven_series = len({r["serie_uid"] for r in resultaten_per_bestand}) - overgeslagen
+    print(f"\nOutput klaar: {geschreven_series} serie(s), {totaal_bestanden} "
+          f"bestand(en) geschreven naar: {output_map}")
+    if overgeslagen:
+        print(f"  ({overgeslagen} bestand(en) overgeslagen.)")
+
+    unieke_series = len({r["serie_uid"] for r in resultaten_per_bestand})
+    geschreven_series = unieke_series - overgeslagen
     print(f"\nOutput klaar: {geschreven_series} serie(s), {totaal_bestanden} "
           f"bestand(en) geschreven naar: {output_map}")
     if overgeslagen:
@@ -1318,7 +1313,7 @@ def main():
         # Gehernoemde kopieën wegschrijven (gebruikt ALLE losse slices).
         if output_map and resultaten:
             print(f"\nKopiëren naar output-map (ProtocolName -> nieuwe naam):")
-            schrijf_naar_output(resultaten, output_map)
+            schrijf_naar_output(resultaten, output_map, bron_map=pad)
 
     else:
         r = verwerk_bestand(pad)
