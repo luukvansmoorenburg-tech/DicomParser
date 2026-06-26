@@ -580,7 +580,23 @@ class DicomNaamApp(tk.Tk):
                     return int(getattr(ds, "InstanceNumber", 0))
                 except Exception:
                     return 0
-            bestanden = sorted([r["bestand"] for r in recs], key=lambda p: _inst_nr({"bestand": p}))
+            bestanden_raw = sorted([r["bestand"] for r in recs],
+                                   key=lambda p: _inst_nr({"bestand": p}))
+            # Expand Enhanced MR multi-frame files into (path, frame_idx) tuples
+            bestanden = []  # list of (path, frame_idx)
+            for pad in bestanden_raw:
+                try:
+                    ds_check = pydicom.dcmread(pad, force=True, stop_before_pixels=True)
+                    sop = str(ds_check.get("SOPClassUID", ""))
+                    if sop in dn.ENHANCED_MR_STORAGE:
+                        ds_full = pydicom.dcmread(pad, force=True)
+                        n_frames = ds_full.pixel_array.shape[0] if ds_full.pixel_array.ndim == 3 else 1
+                        for i in range(n_frames):
+                            bestanden.append((pad, i))
+                    else:
+                        bestanden.append((pad, 0))
+                except Exception:
+                    bestanden.append((pad, 0))
         except Exception as e:
             messagebox.showerror("Error", f"Could not load series: {e}")
             return
@@ -642,11 +658,14 @@ class DicomNaamApp(tk.Tk):
             if idx in _cache:
                 return _cache[idx]
             try:
-                ds = pydicom.dcmread(bestanden[idx], force=True)
+                pad, frame_idx = bestanden[idx]
+                ds = pydicom.dcmread(pad, force=True)
                 raw = ds.pixel_array
-                # Handle multi-frame (Enhanced MR): pick middle frame
-                while raw.ndim > 2:
-                    raw = raw[raw.shape[0] // 2]
+                # Select specific frame for Enhanced MR, or 2D slice
+                if raw.ndim == 3:
+                    raw = raw[frame_idx]
+                elif raw.ndim > 3:
+                    raw = raw[frame_idx][0]
                 arr = raw.astype(float)
                 slope = float(getattr(ds, "RescaleSlope", 1))
                 intercept = float(getattr(ds, "RescaleIntercept", 0))
@@ -683,7 +702,8 @@ class DicomNaamApp(tk.Tk):
             info_lbl.config(text=f"Slice {idx + 1} / {len(bestanden)}")
             # Load metadata from DICOM (only first slice, cached implicitly via ds)
             try:
-                ds_meta = pydicom.dcmread(bestanden[idx], force=True,
+                pad_meta, _ = bestanden[idx]
+                ds_meta = pydicom.dcmread(pad_meta, force=True,
                                           stop_before_pixels=True)
                 _laad_meta(ds_meta)
             except Exception:
