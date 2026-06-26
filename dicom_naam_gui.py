@@ -158,6 +158,7 @@ class DicomNaamApp(tk.Tk):
     def _bouw_overzicht_scherm(self):
         self._wis_scherm()
         self.geometry("1100x650")
+        self._undo_stack = []   # [(item_id, kolom, oude_waarde)]
 
         # Toolbar
         toolbar = tk.Frame(self, bg=BG, padx=12, pady=8)
@@ -165,6 +166,12 @@ class DicomNaamApp(tk.Tk):
 
         tk.Label(toolbar, text="Overzicht gegenereerde namen",
                  font=FONT_H, bg=BG).pack(side="left")
+
+        self._undo_btn = tk.Button(toolbar, text="↩  Ongedaan maken", font=FONT,
+                  padx=10, pady=4, state="disabled",
+                  command=self._undo)
+        self._undo_btn.pack(side="left", padx=(16, 0))
+        self.bind("<Control-z>", lambda e: self._undo())
 
         tk.Button(toolbar, text="✔  Namen toepassen", font=FONT_B,
                   bg=ACCENT, fg=WHITE, padx=14, pady=4,
@@ -303,38 +310,57 @@ class DicomNaamApp(tk.Tk):
         tmp.close()
         webbrowser.open(f"file:///{tmp.name}")
 
+    def _undo(self):
+        if not self._undo_stack:
+            return
+        item_id, kolom, oude_waarde = self._undo_stack.pop()
+        self._tabel.set(item_id, kolom, oude_waarde)
+        if not self._undo_stack:
+            self._undo_btn.config(state="disabled")
+
+    def _sla_op_en_undo(self, item_id, kolom, oude_waarde, nieuwe_waarde):
+        """Sla een wijziging op en voeg toe aan undo-stack."""
+        if nieuwe_waarde and nieuwe_waarde != oude_waarde:
+            self._undo_stack.append((item_id, kolom, oude_waarde))
+            self._tabel.set(item_id, kolom, nieuwe_waarde)
+            self._undo_btn.config(state="normal")
+
     def _bewerk_cel(self, event):
-        """Open een inline invoerveld voor de 'nieuw'-kolom of patiënt-header."""
+        """Open invoer voor de 'nieuw'-kolom of patiënt-header."""
         item = self._tabel.identify_row(event.y)
         col  = self._tabel.identify_column(event.x)
         if not item:
             return
 
-        # Patiënt-header rij bewerken (kolom 2)
+        # Patiënt-header: popup dialog (geen inline om scroll-probleem te voorkomen)
         tags = self._tabel.item(item, "tags")
         if "patient_header" in tags and col == "#2":
-            x, y, w, h = self._tabel.bbox(item, col)
             huidige = self._tabel.set(item, "beschrijving")
-            invoer = tk.Entry(self._tabel, font=FONT_B,
-                              bg="#0078d4", fg="white",
-                              insertbackground="white")
-            invoer.place(x=x, y=y, width=w, height=h)
+            popup = tk.Toplevel(self)
+            popup.title("Patiëntnaam aanpassen")
+            popup.resizable(False, False)
+            popup.grab_set()
+            frm = tk.Frame(popup, padx=20, pady=16)
+            frm.pack()
+            tk.Label(frm, text="Naam:", font=FONT).grid(row=0, column=0, sticky="w")
+            invoer = tk.Entry(frm, font=FONT, width=50)
+            invoer.grid(row=0, column=1, padx=(8, 0))
             invoer.insert(0, huidige)
             invoer.select_range(0, tk.END)
             invoer.focus_set()
 
-            def opslaan_header(event=None):
-                nieuwe = invoer.get().strip()
-                if nieuwe:
-                    self._tabel.set(item, "beschrijving", nieuwe)
-                invoer.destroy()
+            def bevestig(event=None):
+                self._sla_op_en_undo(item, "beschrijving", huidige, invoer.get().strip())
+                popup.destroy()
 
-            invoer.bind("<Return>", opslaan_header)
-            invoer.bind("<Escape>", lambda e: invoer.destroy())
-            invoer.bind("<FocusOut>", opslaan_header)
+            tk.Button(frm, text="OK", font=FONT_B, bg=ACCENT, fg=WHITE,
+                      padx=12, command=bevestig).grid(row=1, column=1,
+                      sticky="e", pady=(12, 0))
+            invoer.bind("<Return>", bevestig)
+            invoer.bind("<Escape>", lambda e: popup.destroy())
             return
 
-        if col != "#4":   # alleen kolom 'nieuw' voor gewone rijen
+        if col != "#4":
             return
 
         x, y, w, h = self._tabel.bbox(item, col)
@@ -348,8 +374,7 @@ class DicomNaamApp(tk.Tk):
 
         def opslaan(event=None):
             nieuwe = invoer.get().strip()
-            if nieuwe:
-                self._tabel.set(item, "nieuw", nieuwe)
+            self._sla_op_en_undo(item, "nieuw", huidige, nieuwe)
             invoer.destroy()
 
         invoer.bind("<Return>", opslaan)

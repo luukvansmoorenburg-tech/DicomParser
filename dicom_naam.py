@@ -478,7 +478,8 @@ def onderdeel_weging(ds):
         series_bound = series_bound[3:]
 
     # SURVEY / LOCALIZER -> originele naam behouden (EERSTE check, vóór VIEW!)
-    _survey_trefwoorden = ("SURVEY", "PLANSCAN", "LOCALIZER", "SCOUT", "MOBIVIEW")
+    _survey_trefwoorden = ("SURVEY", "PLANSCAN", "LOCALIZER", "SCOUT", "MOBIVIEW",
+                           "MINIP")
     _is_survey = any(k in protocol_norm or k in series_norm
                      for k in _survey_trefwoorden)
     if not _is_survey:
@@ -969,9 +970,11 @@ def maak_naam(ds):
     tijd     = onderdeel_acquisitietijd(ds)
     dikte    = onderdeel_slicethickness(ds)
 
+    is_recon = _is_recon(ds)
+
     # Geen parallel imaging -> naam begint direct met de weging
     if undersampling == "noPI":
-        if _is_recon(ds):
+        if is_recon:
             return SCHEIDINGSTEKEN.join([weging] + bb + ["recon"])
         return SCHEIDINGSTEKEN.join([weging] + bb + [tijd, dikte])
 
