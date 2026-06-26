@@ -97,12 +97,14 @@ def onderdeel_acquisitietijd(ds):
     # Omrekenen naar minuten + seconden, bv. 143 s -> '2m23s'.
     totaal = round(seconden)
     minuten, sec = divmod(totaal, 60)
+    if minuten == 0:
+        return f"{sec}s"
     return f"{minuten}m{sec:02d}s"
 
 
 def onderdeel_slicethickness(ds):
     """Slice thickness -> uit SliceThickness (0018,0050), in mm."""
-    dikte = ds.get("SliceThickness", None)
+    dikte = zoek_tag(ds, "SliceThickness", (0x0018, 0x0050))
     if dikte is None:
         return "geenDikte"
     return f"{float(dikte):.1f}mm"
@@ -186,6 +188,9 @@ PROTOCOL_SLEUTELWOORDEN = [
     # DCE/DSC: afgehandeld in STAP 0 (custom namen)
     # DSC: afgehandeld in STAP 0 (custom naam T2*DSC)
     # PWI/ASL: afgehandeld in STAP 0 (custom namen T2*DSC / ASL / 3dASL)
+    # QFLOW (Phase Contrast flow quantification)
+    ("QFLOW",        "PCA",           False),
+
     # TOF/MRA/PCA: afgehandeld in STAP 0 (2D/3D onderscheid)
 
     # --- Susceptibility ------------------------------------------------------
@@ -216,9 +221,9 @@ PROTOCOL_SLEUTELWOORDEN = [
     ("T2FFE",        "T2FFE",         False),   # T2* gradient echo
     ("T2STAR",       "T2FFE",         False),
     ("T1FFE",        "T1FFE",         False),   # T1 gradient echo
-    ("TFE",          "TFE",           False),   # turbo field echo (Philips prep-GRE)
     ("MPRAGE",       "T1TFE",         True),    # Siemens 3D IR-prepped GRE -> 3DT1TFE
-    ("IRTFE",        "T1TFE",         True),    # Philips IR-TFE -> 3DT1TFE
+    ("IRTFE",        "T1TFE",         True),    # Philips IR-TFE -> 3DT1TFE (voor TFE!)
+    ("TFE",          "TFE",           False),   # turbo field echo (Philips prep-GRE)
     ("VIBE",         "T1FFE",         True),    # Siemens 3D T1 GRE breath-hold
     ("FLASH",        "T1FFE",         False),   # Siemens GRE naam
     ("FISP",         "T2FFE",         False),   # Siemens GRE naam
@@ -270,10 +275,12 @@ PROTOCOL_SLEUTELWOORDEN = [
     ("MULTIVANE",    "T2MV",          False),   # SENSE MultiVANE
 
     # --- Single Shot TSE (HASTE / SS-TSE) -----------------------------------
-    ("HASTE",        "SSh",           False),
-    ("SSTSE",        "SSh",           False),
-    ("SS-TSE",       "SSh",           False),
-    ("SSHTSE",       "SSh",           False),
+    ("HASTE",        "T2SSh",           False),
+    ("SSTSE",        "T2SSh",           False),
+    ("SS-TSE",       "T2SSh",           False),
+    ("SSHTSE",       "T2SSh",           False),
+    ("T2SSH",        "T2SSh",           False),   # eerder hernoemde bestanden
+    ("SSH",          "T2SSh",           False),   # eerder hernoemde bestanden
 
     # --- MRCP ----------------------------------------------------------------
     ("MRCP",         "T2-MRCP",       False),   # zware T2 TSE (galwegen, urethra, CSF)
@@ -300,17 +307,20 @@ def protocol_naam_weging(ds):
     een woordgrens zodat 'IR' niet matcht in 'PIRADS'.
     Geeft (weging_string, forceer_3d) terug, of None als niets matcht.
     """
-    protocol = str(ds.get("ProtocolName", "")).upper().replace(" ", "")
-    if not protocol:
+    protocol_raw = str(ds.get("ProtocolName", "")).upper().replace(" ", "")
+    if not protocol_raw:
         return None
-    protocol_norm = protocol.replace("-", "").replace("_", "")
+    # Volledig genormaliseerd (voor lange sleutelwoorden)
+    protocol_norm = protocol_raw.replace("-", "").replace("_", "")
+    # Met underscores bewaard (voor woordgrens-matching van korte sleutelwoorden)
+    # zodat 'T1' matcht in 'T1_NATIVE' maar niet in 'T1NATIVE'
+    protocol_bound = protocol_raw  # alleen spaties al weg, koppeltekens en underscores bewaard
     for sleutel, weging, forceer_3d in PROTOCOL_SLEUTELWOORDEN:
         sleutel_norm = sleutel.replace("-", "").replace("_", "")
         if len(sleutel_norm) <= 2:
-            # Woordgrens vereist voor zeer korte sleutelwoorden (IR, PD, T1, T2)
-            # zodat 'IR' niet matcht in 'PIRADS'
+            # Woordgrens: gebruik protocol_bound (underscores als scheiding)
             pattern = r'(?<![A-Z0-9])' + re.escape(sleutel_norm) + r'(?![A-Z0-9])'
-            if re.search(pattern, protocol_norm):
+            if re.search(pattern, protocol_bound):
                 return weging, forceer_3d
         else:
             if sleutel_norm in protocol_norm:
@@ -416,12 +426,13 @@ def onderdeel_weging(ds):
     DWI-subtypes krijgen nooit een 3D-prefix (3D DWI bestaat niet klinisch).
     """
     # --- Tags inlezen --------------------------------------------------------
-    tr       = _getal(ds.get("RepetitionTime"))
-    te       = _getal(ds.get("EchoTime"))
-    ti       = _getal(ds.get("InversionTime"))
-    scan_seq = str(ds.get("ScanningSequence", "")).upper()
-    etl      = _getal(ds.get("EchoTrainLength"))
-    acq_type = str(ds.get("MRAcquisitionType", "")).upper()
+    # zoek_tag wordt gebruikt zodat geneste waarden (Enhanced MR) ook gevonden worden.
+    tr       = _getal(zoek_tag(ds, "RepetitionTime", (0x0018, 0x0080)))
+    te       = _getal(zoek_tag(ds, "EchoTime", (0x0018, 0x0081)))
+    ti       = _getal(zoek_tag(ds, "InversionTime", (0x0018, 0x0082)))
+    scan_seq = str(zoek_tag(ds, "ScanningSequence", (0x0018, 0x0020)) or "").upper()
+    etl      = _getal(zoek_tag(ds, "EchoTrainLength", (0x0018, 0x0091)))
+    acq_type = str(zoek_tag(ds, "MRAcquisitionType", (0x0018, 0x0023)) or "").upper()
     b_waarde = _getal(zoek_tag(ds, "DiffusionBValue", (0x0018, 0x9087)))
     img_type = str(ds.get("ImageType", "")).upper()
 
@@ -449,6 +460,15 @@ def onderdeel_weging(ds):
     series_norm = series_raw.replace(" ", "").replace("-", "").replace("_", "")
     if series_norm.startswith("WIP"):
         series_norm = series_norm[3:]
+
+    # Voor woordgrens-matching van korte sleutelwoorden: bewaar underscores
+    # zodat 'T1' matcht in 'T1_native' maar niet in 'T1NATIVE'
+    protocol_bound = protocol_raw.replace(" ", "").replace("-", "").upper()
+    if protocol_bound.startswith("WIP"):
+        protocol_bound = protocol_bound[3:]
+    series_bound = series_raw.replace(" ", "").replace("-", "").upper()
+    if series_bound.startswith("WIP"):
+        series_bound = series_bound[3:]
 
     # EPI detectie ook op SeriesDescription als ScanningSequence geen EP bevat
     if not is_ep and any(k in series_norm for k in ("FEEPI", "GREEPI", "EPI")):
@@ -523,7 +543,8 @@ def onderdeel_weging(ds):
             return "T1rho-FFE"
         return "T1rho"
 
-    if any(k in protocol_norm for k in ("T2STARMAP", "T2STARMAPPING")):
+    if any(k in protocol_norm for k in ("T2STARMAP", "T2STARMAPPING",
+                                        "R2STAR", "T2STAR", "R2_STAR")):
         return "T2*map-mFFE"
 
     if "T2MAP" in protocol_norm or "T2MAPPING" in protocol_norm:
@@ -600,12 +621,22 @@ def onderdeel_weging(ds):
     protocol_hit = protocol_naam_weging(ds)
     if protocol_hit is not None:
         weging, forceer_3d = protocol_hit
-        # DTI: voeg richtingen toe ook als het via de protocolnaam herkend is.
+        # DTI: voeg richtingen toe, maar vereist >= 6 richtingen voor echte tensor.
+        # Bij < 6 richtingen terugvallen op DWI ondanks 'DTI' in protocolnaam.
         if weging == "DTI":
-            weging = _dti_weging(ds)
+            n = _dti_richtingen(ds)
+            if n is not None and n < 6:
+                weging = "DWI"
+            else:
+                weging = _dti_weging(ds)
         # mDixon: verfijn naar W/F/IP/OP/ALL op basis van ImageType.
         if weging == "mDixon":
             weging = _mdixon_weging(img_type)
+        # ADC is altijd een afgeleid beeld, nooit 3D-prefix
+        _nooit_3d = {"ADC", "DWI", "DTI", "DWIBS", "TSEDWI", "IRIS-DWI",
+                     "fMRI", "EPI", "SWIp", "QSM"}
+        if weging in _nooit_3d or weging.startswith("DTI_"):
+            return weging
         if forceer_3d or is_3d:
             return f"3D{weging}"
         return weging
@@ -624,9 +655,10 @@ def onderdeel_weging(ds):
         # DWIBS: EPI-diffusie + InversionTime (STIR-achtige achtergrondonderdrukking)
         if ti is not None and ti > 0:
             return "DWIBS"
-        # DTI: meerdere richtingen aanwezig in de metadata
+        # DTI: minimaal 6 richtingen vereist voor diffusion tensor
+        # < 6 richtingen = DWI met meerdere b-waarden, geen echte tensor
         n_richtingen = _dti_richtingen(ds)
-        if n_richtingen is not None and n_richtingen > 1:
+        if n_richtingen is not None and n_richtingen >= 6:
             return _dti_weging(ds)
         # TSE DWI: spin echo readout (geen EP) met b-waarde
         if is_se and not is_ep:
@@ -717,7 +749,7 @@ def onderdeel_weging(ds):
             return naam("T2-mDix")
         # SSh (single shot TSE / HASTE): ETL > 70
         if etl is not None and etl > 70:
-            return "SSh"
+            return "T2SSh"
         # T2-MRCP: extreem lange TE (> 400 ms) op SE/TSE
         if te > 400:
             return "T2-MRCP"
@@ -895,14 +927,8 @@ def _heeft_mt(ds):
     if "MTR" in protocol or (protocol.endswith("MT") or "_MT" in str(ds.get("ProtocolName", "")).upper()):
         return True
 
-    mt_tag = str(zoek_tag(ds, "MagnetizationTransfer", (0x0018, 0x9020)) or "").upper()
-    if mt_tag == "ON":
-        return True
-
-    seq_variant = str(ds.get("SequenceVariant", "")).upper()
-    if "MTC" in seq_variant:
-        return True
-
+    # Tag-gebaseerde MT-detectie is te breed op Philips (veel sequenties hebben
+    # MagnetizationTransfer=ON zonder bewuste MT-puls) -> alleen protocolnaam.
     return False
 
 
@@ -911,8 +937,11 @@ def maak_naam(ds):
     weging = onderdeel_weging(ds)
     # Geen fs/mt suffix op DWI-familie, EPI of afgeleide beelden
     _geen_suffix_prefixen = ("DWI", "DTI", "ADC", "DWIBS", "TSEDWI", "IRIS-DWI",
-                             "MultiShotDWI", "SSh", "EPI", "fMRI", "ASL", "3dASL",
-                             "IVIM", "onbekend", "3Donbekend", "mixed", "3Dmixed")
+                             "MultiShotDWI", "EPI", "fMRI", "ASL", "3dASL",
+                             "IVIM", "onbekend", "3Donbekend", "mixed", "3Dmixed",
+                             "T2SSh", "4dFB", "GRaSE", "T2-MRCP", "3DT2-MRCP", "MRS", "SVS",
+                             "CSI", "T2map", "T1map", "T2*map", "T1rho", "QSM",
+                             "SWIp", "PCA", "TOF", "MRA", "MRE")
     _heeft_geen_suffix = any(weging.startswith(p) for p in _geen_suffix_prefixen)
     if _heeft_fatsat(ds) and not _heeft_geen_suffix:
         weging = weging + "fs"
@@ -946,15 +975,26 @@ def maak_naam(ds):
 # andere SOP Class en worden zo netjes overgeslagen.
 MR_IMAGE_STORAGE = "1.2.840.10008.5.1.4.1.1.4"
 
+# Enhanced MR: meerdere frames per bestand, TR/TE genest in functional groups.
+ENHANCED_MR_STORAGE = {
+    "1.2.840.10008.5.1.4.1.1.4.1",  # Enhanced MR Image Storage
+    "1.2.840.10008.5.1.4.1.1.4.3",  # Enhanced Color MR Image Storage
+}
+
 
 def is_mr_beeld(ds):
-    """True als dit een echt MR-beeld is (en geen PS / raw / DICOMDIR)."""
+    """True als dit een echt MR-beeld is (klassiek of Enhanced MR)."""
     if str(ds.get("Modality", "")) != "MR":
         return False
-    if str(ds.get("SOPClassUID", "")) != MR_IMAGE_STORAGE:
-        return False
-    # Zonder TR en TE kunnen we toch geen weging bepalen -> als ruis behandelen.
-    return ds.get("RepetitionTime") is not None and ds.get("EchoTime") is not None
+    sop = str(ds.get("SOPClassUID", ""))
+    if sop == MR_IMAGE_STORAGE:
+        return ds.get("RepetitionTime") is not None and ds.get("EchoTime") is not None
+    if sop in ENHANCED_MR_STORAGE:
+        # TR/TE zitten genest -> zoek_tag doorzoekt de hele boom
+        tr = zoek_tag(ds, "RepetitionTime", (0x0018, 0x0080))
+        te = zoek_tag(ds, "EchoTime", (0x0018, 0x0081))
+        return tr is not None and te is not None
+    return False
 
 
 def verwerk_bestand(pad):
@@ -1171,19 +1211,36 @@ def _veilige_mapnaam(naam):
     return re.sub(r'[\\/:*?"<>|]', "_", naam).strip()
 
 
-def schrijf_naar_output(resultaten_per_bestand, output_map, bron_map=None):
-    """Kopieer alle MR-slices naar output_map met behoud van de originele mapstructuur.
+def schrijf_naar_output(resultaten_per_bestand, output_map, bron_map=None,
+                        alle_bestanden=None):
+    """Kopieer de volledige bronmap naar output_map met behoud van de mapstructuur.
 
-    Alleen tag (0018,1030) ProtocolName wordt overschreven met de gegenereerde naam.
-    Bestandsnamen, mapstructuur en alle andere tags blijven ongewijzigd.
+    - Alle bestanden (DICOM én niet-DICOM) worden gekopieerd.
+    - Voor MR-beelden wordt alleen tag (0018,1030) ProtocolName aangepast.
+    - Alle andere bestanden (.ExamCard, README, etc.) worden ongewijzigd gekopieerd.
 
-    'resultaten_per_bestand' = lijst van per-bestand dicts (NIET gegroepeerd).
-    'bron_map' = pad van de bronmap zodat relatieve paden bewaard blijven.
+    'resultaten_per_bestand' = lijst van per-bestand dicts met gegenereerde namen.
+    'bron_map' = pad van de bronmap voor relatieve padberekening.
+    'alle_bestanden' = alle bestanden in de bronmap (incl. niet-DICOM).
     """
+    import shutil
     os.makedirs(output_map, exist_ok=True)
 
-    # Bouw een lookup: bestandspad -> gegenereerde naam
+    # Bouw een lookup: bestandspad -> gegenereerde naam (alleen MR-beelden)
     naam_per_bestand = {r["bestand"]: r["naam"] for r in resultaten_per_bestand}
+
+    # Kopieer alle bestanden, ook niet-DICOM
+    if alle_bestanden and bron_map:
+        for bronpad in alle_bestanden:
+            if bronpad in naam_per_bestand:
+                continue  # MR-beelden worden hieronder apart behandeld
+            try:
+                rel_pad = os.path.relpath(bronpad, bron_map)
+            except ValueError:
+                rel_pad = os.path.basename(bronpad)
+            doelpad = os.path.join(output_map, rel_pad)
+            os.makedirs(os.path.dirname(doelpad), exist_ok=True)
+            shutil.copy2(bronpad, doelpad)
 
     totaal_bestanden = 0
     overgeslagen = 0
@@ -1313,7 +1370,8 @@ def main():
         # Gehernoemde kopieën wegschrijven (gebruikt ALLE losse slices).
         if output_map and resultaten:
             print(f"\nKopiëren naar output-map (ProtocolName -> nieuwe naam):")
-            schrijf_naar_output(resultaten, output_map, bron_map=pad)
+            schrijf_naar_output(resultaten, output_map, bron_map=pad,
+                                alle_bestanden=bestanden)
 
     else:
         r = verwerk_bestand(pad)
