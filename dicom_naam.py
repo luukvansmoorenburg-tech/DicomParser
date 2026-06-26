@@ -188,8 +188,8 @@ PROTOCOL_SLEUTELWOORDEN = [
     # DCE/DSC: afgehandeld in STAP 0 (custom namen)
     # DSC: afgehandeld in STAP 0 (custom naam T2*DSC)
     # PWI/ASL: afgehandeld in STAP 0 (custom namen T2*DSC / ASL / 3dASL)
-    # QFLOW (Phase Contrast flow quantification)
-    ("QFLOW",        "PCA",           False),
+    # QFLOW (Phase Contrast flow quantification) -> naam behouden
+    ("QFLOW",        "QFLOW",         False),
 
     # TOF/MRA/PCA: afgehandeld in STAP 0 (2D/3D onderscheid)
 
@@ -206,6 +206,7 @@ PROTOCOL_SLEUTELWOORDEN = [
     ("FLAIR",        "FLAIR",         False),
     ("3DSTIR",       "STIR",          True),
     ("STIR",         "STIR",          False),
+    ("IRTFE",        "T1TFE",         True),    # IR-prepped TFE (voor IR!)
     ("IR",           "IR",            False),   # overige inversion recovery
 
     # --- Dixon -------------------------------------------------------------------
@@ -223,6 +224,7 @@ PROTOCOL_SLEUTELWOORDEN = [
     ("T1FFE",        "T1FFE",         False),   # T1 gradient echo
     ("MPRAGE",       "T1TFE",         True),    # Siemens 3D IR-prepped GRE -> 3DT1TFE
     ("IRTFE",        "T1TFE",         True),    # Philips IR-TFE -> 3DT1TFE (voor TFE!)
+    ("BTFE",         "bTFE",          False),   # balanced TFE (Cine) -> voor TFE!
     ("TFE",          "TFE",           False),   # turbo field echo (Philips prep-GRE)
     ("VIBE",         "T1FFE",         True),    # Siemens 3D T1 GRE breath-hold
     ("FLASH",        "T1FFE",         False),   # Siemens GRE naam
@@ -287,16 +289,18 @@ PROTOCOL_SLEUTELWOORDEN = [
 
     # Mapping: afgehandeld in STAP 0 (techniek-suffix voor T2map/T2starmap)
 
-    # --- Spin Echo / TSE / 3D varianten -------------------------------------
-    ("SPACE",        "T2",            True),    # Siemens 3D TSE
-    ("CUBE",         "T2",            True),    # GE 3D TSE
-    # VIEW-varianten: afgehandeld in STAP 0 (T1/T2 uit tags, BB-suffix)
+    # --- Weging (voor SPACE/CUBE zodat T1 SPACE correct als T1 herkend wordt) --
     ("3DT2",         "T2",            True),
     ("3DT1",         "T1",            True),
     ("3DPD",         "PD",            True),
     ("T2",           "T2",            False),
     ("T1",           "T1",            False),
     ("PD",           "PD",            False),
+
+    # --- Spin Echo / TSE / 3D varianten (na T1/T2 zodat T1 SPACE -> T1 wint) --
+    ("SPACE",        "T2",            True),    # Siemens 3D TSE
+    ("CUBE",         "T2",            True),    # GE 3D TSE
+    # VIEW-varianten: afgehandeld in STAP 0 (T1/T2 uit tags, BB-suffix)
 ]
 
 
@@ -307,18 +311,21 @@ def protocol_naam_weging(ds):
     een woordgrens zodat 'IR' niet matcht in 'PIRADS'.
     Geeft (weging_string, forceer_3d) terug, of None als niets matcht.
     """
-    protocol_raw = str(ds.get("ProtocolName", "")).upper().replace(" ", "")
-    if not protocol_raw:
+    raw = str(ds.get("ProtocolName", "")).upper()
+    if not raw:
         return None
-    # Volledig genormaliseerd (voor lange sleutelwoorden)
-    protocol_norm = protocol_raw.replace("-", "").replace("_", "")
-    # Met underscores bewaard (voor woordgrens-matching van korte sleutelwoorden)
-    # zodat 'T1' matcht in 'T1_NATIVE' maar niet in 'T1NATIVE'
-    protocol_bound = protocol_raw  # alleen spaties al weg, koppeltekens en underscores bewaard
+    # Strip WIP-prefix
+    raw_strip = raw.lstrip()
+    if raw_strip.startswith("WIP ") or raw_strip.startswith("WIP_"):
+        raw = raw_strip[4:]
+    # Volledig genormaliseerd (voor lange sleutelwoorden, > 3 tekens)
+    protocol_norm = raw.replace(" ", "").replace("-", "").replace("_", "")
+    # Ruwe versie met spaties bewaard: spaties/koppeltekens/underscores als woordgrenzen
+    protocol_bound = raw.replace("-", " ").replace("_", " ")
     for sleutel, weging, forceer_3d in PROTOCOL_SLEUTELWOORDEN:
         sleutel_norm = sleutel.replace("-", "").replace("_", "")
-        if len(sleutel_norm) <= 2:
-            # Woordgrens: gebruik protocol_bound (underscores als scheiding)
+        if len(sleutel_norm) <= 3:
+            # Woordgrens voor korte sleutelwoorden (T1, T2, IR, PD, ADC, DWI ...)
             pattern = r'(?<![A-Z0-9])' + re.escape(sleutel_norm) + r'(?![A-Z0-9])'
             if re.search(pattern, protocol_bound):
                 return weging, forceer_3d
@@ -470,9 +477,26 @@ def onderdeel_weging(ds):
     if series_bound.startswith("WIP"):
         series_bound = series_bound[3:]
 
+    # SURVEY / LOCALIZER -> originele naam behouden (EERSTE check, vóór VIEW!)
+    _survey_trefwoorden = ("SURVEY", "PLANSCAN", "LOCALIZER", "SCOUT", "MOBIVIEW")
+    _is_survey = any(k in protocol_norm or k in series_norm
+                     for k in _survey_trefwoorden)
+    if not _is_survey:
+        _loc_pattern = r'(?<![A-Z0-9])LOC(?![A-Z0-9])'
+        _is_survey = (re.search(_loc_pattern, protocol_bound) is not None or
+                      re.search(_loc_pattern, series_bound) is not None)
+    if _is_survey:
+        orig = series_raw.strip() or protocol_raw.strip()
+        return orig if orig else "Survey"
+
     # EPI detectie ook op SeriesDescription als ScanningSequence geen EP bevat
-    if not is_ep and any(k in series_norm for k in ("FEEPI", "GREEPI", "EPI")):
-        is_ep = True
+    # Gebruik woordgrens voor 'EPI' zodat 'TSE PI' -> 'TSEPI' niet foutief matcht
+    if not is_ep:
+        if any(k in series_norm for k in ("FEEPI", "GREEPI")):
+            is_ep = True
+        elif re.search(r'(?<![A-Z0-9])EPI(?![A-Z0-9])',
+                       series_raw.replace("-", " ").replace("_", " ")):
+            is_ep = True
 
     # MRE (MR Elastography): techniek-suffix uit protocolnaam of ScanningSequence
     if "MRE" in protocol_norm or "ELASTOGRAPH" in protocol_norm:
@@ -573,33 +597,22 @@ def onderdeel_weging(ds):
     if "4DVANE" in protocol_norm or "4DFREEBREATHING" in protocol_norm or "4DFB" in protocol_norm:
         return "4dFB"
 
-    # VIEW-sequenties (BrainVIEW, SpineVIEW, PelvisVIEW etc.)
-    # Naam ophalen, BB-suffix toevoegen, weging bepalen uit tags
-    _view_namen = ("BRAINVIEW", "SPINEVIEW", "PELVISVIEW", "BREASTVIEW",
-                   "MSKVIEW", "NERVEVIEW", "VISTA")
-    _view_hit = next((v for v in _view_namen
-                      if v in protocol_norm or v in series_norm), None)
-    if _view_hit or ("VIEW" in protocol_norm or "VIEW" in series_norm):
-        # Specifieke naam of generiek VIEW
-        if _view_hit == "NERVEVIEW":
+    # VIEW-sequenties (BrainVIEW, SpineVIEW, ProstateVIEW etc.)
+    # Naam dynamisch ophalen: woord direct vóór 'VIEW' wordt bewaard.
+    _src_voor_view = protocol_raw or series_raw
+    _view_match = re.search(r'([A-Za-z]+)VIEW', _src_voor_view, re.IGNORECASE)
+    if _view_match or "VIEW" in protocol_norm or "VIEW" in series_norm:
+        if "NERVEVIEW" in protocol_norm or "NERVEVIEW" in series_norm:
             return "3dNerveView"
-        if _view_hit == "BRAINVIEW":
-            view_naam = "BrainView"
-        elif _view_hit == "SPINEVIEW":
-            view_naam = "SpineView"
-        elif _view_hit == "PELVISVIEW":
-            view_naam = "PelvisView"
-        elif _view_hit == "BREASTVIEW":
-            view_naam = "BreastView"
-        elif _view_hit == "MSKVIEW":
-            view_naam = "MSKView"
-        elif _view_hit == "VISTA":
+        if "VISTA" in protocol_norm or "VISTA" in series_norm:
             view_naam = "View"
+        elif _view_match:
+            # Bewaar het prefix-woord met juiste hoofdletters: Brain, Spine, Prostate etc.
+            prefix = _view_match.group(1)
+            view_naam = prefix.capitalize() + "View"
         else:
             view_naam = "View"
-        # BlackBlood suffix
-        src = protocol_norm + series_norm
-        # Weging bepalen uit TR/TE (niet uit protocol naam om circulaire match te voorkomen)
+        # Weging bepalen uit TR/TE
         view_weging = "T2"
         if tr is not None and te is not None:
             if tr < TR_KORT:
@@ -878,7 +891,7 @@ def _is_recon(ds):
 
     protocol = str(ds.get("ProtocolName", "")).upper().replace(" ", "").replace("-", "").replace("_", "")
     series   = str(ds.get("SeriesDescription", "")).upper().replace(" ", "").replace("-", "").replace("_", "")
-    if any(k in protocol or k in series for k in ("MIP", "MPR", "MINIP")):
+    if any(k in protocol or k in series for k in ("MIP", "MPR", "MINIP", "RECON")):
         return True
 
     return False
@@ -1017,8 +1030,13 @@ def verwerk_bestand(pad):
     return {
         "bestand": pad,
         "serie_uid": str(ds.get("SeriesInstanceUID", "")),
+        "studie_uid": str(ds.get("StudyInstanceUID", "")),
         "serienummer": str(ds.get("SeriesNumber", "")),
         "seriebeschrijving": str(ds.get("SeriesDescription", "")),
+        "patient_naam": str(ds.get("PatientName", "")),
+        "patient_id": str(ds.get("PatientID", "")),
+        "studie_datum": str(ds.get("StudyDate", "")),
+        "studie_beschrijving": str(ds.get("StudyDescription", "")),
         # Originele (0018,1030) ProtocolName -> tonen we in de popup als referentie.
         "origineel_protocol": str(ds.get("ProtocolName", "")),
         "undersampling": onderdeel_undersampling(ds),
@@ -1045,6 +1063,8 @@ def groepeer_per_serie(resultaten):
     dezelfde gegenereerde naam. We pakken het eerste bestand per serie en
     voegen het aantal slices toe. Series blijven in de volgorde waarin ze
     voor het eerst voorkomen.
+    Na groepering: recon-series erven de undersampling van de bijbehorende
+    niet-recon serie binnen hetzelfde onderzoek.
     """
     series = {}
     for r in resultaten:
@@ -1055,7 +1075,31 @@ def groepeer_per_serie(resultaten):
             series[uid] = eerste
         else:
             series[uid]["aantal_slices"] += 1
-    return list(series.values())
+
+    serie_lijst = list(series.values())
+
+    # Herstel undersampling voor recon-series:
+    # zoek per studie een niet-recon serie met dezelfde weging als bron.
+    studie_undersampling = {}  # studie_uid -> {weging_prefix -> undersampling}
+    for r in serie_lijst:
+        if "_recon" not in r.get("naam", "") and r.get("undersampling", "noPI") != "noPI":
+            studie = r.get("studie_uid", "")
+            weging = r.get("weging", "")
+            studie_undersampling.setdefault(studie, {})[weging] = r["undersampling"]
+
+    for r in serie_lijst:
+        if "_recon" in r.get("naam", "") and r.get("undersampling", "noPI") == "noPI":
+            studie = r.get("studie_uid", "")
+            weging = r.get("weging", "")
+            bronnen = studie_undersampling.get(studie, {})
+            # Exacte match, anders eerste beschikbare undersampling in studie
+            us = bronnen.get(weging) or (next(iter(bronnen.values())) if bronnen else None)
+            if us:
+                r["undersampling"] = us
+                # Naam opnieuw opbouwen met de juiste undersampling
+                r["naam"] = f"{us}_{weging}_recon"
+
+    return serie_lijst
 
 
 def print_resultaat(r):

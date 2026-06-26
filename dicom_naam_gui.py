@@ -186,7 +186,7 @@ class DicomNaamApp(tk.Tk):
         # Tabel
         cols = ("serie", "beschrijving", "origineel", "nieuw")
         headers = ("Serie #", "Seriebeschrijving",
-                   "Originele ProtocolName", "Nieuwe naam  (aanpasbaar)")
+                   "Originele ProtocolName", "Nieuwe naam  (dubbelklik = aanpassen)")
 
         tbl_frm = tk.Frame(self, bg=BG)
         tbl_frm.pack(fill="both", expand=True, padx=12, pady=(0, 12))
@@ -210,8 +210,27 @@ class DicomNaamApp(tk.Tk):
         hsb.pack(side="bottom", fill="x")
         self._tabel.pack(fill="both", expand=True)
 
-        # Vul tabel
+        # Stijl voor patiënt-header rijen
+        self._tabel.tag_configure("patient_header",
+                                   background="#0078d4", foreground="white")
+
+        # Vul tabel gegroepeerd per patiënt/onderzoek
+        huidige_studie = None
         for r in self._resultaten:
+            studie_key = r.get("studie_uid", "") or r.get("patient_id", "")
+            if studie_key != huidige_studie:
+                huidige_studie = studie_key
+                # Patiënt-header rij
+                pnaam = r.get("patient_naam", "") or r.get("patient_id", "onbekend")
+                datum = r.get("studie_datum", "")
+                omschr = r.get("studie_beschrijving", "")
+                label = f"  👤  {pnaam}"
+                if datum:
+                    label += f"   |   {datum[:4]}-{datum[4:6]}-{datum[6:]}" if len(datum) == 8 else f"   |   {datum}"
+                if omschr:
+                    label += f"   —   {omschr}"
+                self._tabel.insert("", "end", values=("", label, "", ""),
+                                   tags=("patient_header",))
             self._tabel.insert("", "end", values=(
                 r.get("serienummer", ""),
                 r.get("seriebeschrijving", ""),
@@ -285,10 +304,37 @@ class DicomNaamApp(tk.Tk):
         webbrowser.open(f"file:///{tmp.name}")
 
     def _bewerk_cel(self, event):
-        """Open een inline invoerveld voor de 'nieuw'-kolom."""
+        """Open een inline invoerveld voor de 'nieuw'-kolom of patiënt-header."""
         item = self._tabel.identify_row(event.y)
         col  = self._tabel.identify_column(event.x)
-        if not item or col != "#4":   # alleen kolom 'nieuw'
+        if not item:
+            return
+
+        # Patiënt-header rij bewerken (kolom 2)
+        tags = self._tabel.item(item, "tags")
+        if "patient_header" in tags and col == "#2":
+            x, y, w, h = self._tabel.bbox(item, col)
+            huidige = self._tabel.set(item, "beschrijving")
+            invoer = tk.Entry(self._tabel, font=FONT_B,
+                              bg="#0078d4", fg="white",
+                              insertbackground="white")
+            invoer.place(x=x, y=y, width=w, height=h)
+            invoer.insert(0, huidige)
+            invoer.select_range(0, tk.END)
+            invoer.focus_set()
+
+            def opslaan_header(event=None):
+                nieuwe = invoer.get().strip()
+                if nieuwe:
+                    self._tabel.set(item, "beschrijving", nieuwe)
+                invoer.destroy()
+
+            invoer.bind("<Return>", opslaan_header)
+            invoer.bind("<Escape>", lambda e: invoer.destroy())
+            invoer.bind("<FocusOut>", opslaan_header)
+            return
+
+        if col != "#4":   # alleen kolom 'nieuw' voor gewone rijen
             return
 
         x, y, w, h = self._tabel.bbox(item, col)
