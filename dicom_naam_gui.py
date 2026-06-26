@@ -603,7 +603,7 @@ class DicomNaamApp(tk.Tk):
 
         popup = tk.Toplevel(self)
         popup.title(f"Series viewer — {serie_naam} [{len(bestanden)} slices]")
-        popup.geometry("560x680")
+        popup.geometry("560x780")
         BG = self._theme["BG"]; FG = self._theme["FG"]
         popup.configure(bg=BG)
 
@@ -613,15 +613,41 @@ class DicomNaamApp(tk.Tk):
         canvas = tk.Canvas(popup, bg="#000000", width=512, height=512)
         canvas.pack(padx=12, pady=4)
 
+        # Slice slider
         slider_var = tk.IntVar(value=0)
         slider = ttk.Scale(popup, from_=0, to=len(bestanden)-1,
                            variable=slider_var, orient="horizontal")
         slider.pack(fill="x", padx=12, pady=(0, 4))
 
+        # Window/Level sliders
+        wl_frm = tk.Frame(popup, bg=BG)
+        wl_frm.pack(fill="x", padx=12, pady=(0, 2))
+
+        tk.Label(wl_frm, text="Level (WC):", font=("Segoe UI", 8),
+                 bg=BG, fg=FG, width=10, anchor="w").grid(row=0, column=0)
+        wc_var = tk.IntVar(value=500)
+        wc_lbl = tk.Label(wl_frm, text="500", font=("Segoe UI", 8),
+                          bg=BG, fg=FG, width=5)
+        wc_lbl.grid(row=0, column=2)
+        wc_slider = ttk.Scale(wl_frm, from_=-2000, to=4000,
+                              variable=wc_var, orient="horizontal")
+        wc_slider.grid(row=0, column=1, sticky="ew", padx=4)
+
+        tk.Label(wl_frm, text="Window (WW):", font=("Segoe UI", 8),
+                 bg=BG, fg=FG, width=10, anchor="w").grid(row=1, column=0)
+        ww_var = tk.IntVar(value=2000)
+        ww_lbl = tk.Label(wl_frm, text="2000", font=("Segoe UI", 8),
+                          bg=BG, fg=FG, width=5)
+        ww_lbl.grid(row=1, column=2)
+        ww_slider = ttk.Scale(wl_frm, from_=1, to=8000,
+                              variable=ww_var, orient="horizontal")
+        ww_slider.grid(row=1, column=1, sticky="ew", padx=4)
+        wl_frm.columnconfigure(1, weight=1)
+
         # Metadata panel
         meta_lbl = tk.Label(popup, text="", font=("Consolas", 9),
                             bg=BG, fg=FG, justify="left")
-        meta_lbl.pack(pady=(0, 6))
+        meta_lbl.pack(pady=(0, 4))
 
         def _laad_meta(ds):
             tr    = ds.get("RepetitionTime")
@@ -670,14 +696,26 @@ class DicomNaamApp(tk.Tk):
                 slope = float(getattr(ds, "RescaleSlope", 1))
                 intercept = float(getattr(ds, "RescaleIntercept", 0))
                 arr = arr * slope + intercept
-                wc = ds.get("WindowCenter", None)
-                ww = ds.get("WindowWidth", None)
-                if wc is None: wc = arr.mean()
-                if ww is None: ww = max(arr.std() * 4, 1)
-                if hasattr(wc, "__iter__"): wc = float(list(wc)[0])
-                else: wc = float(wc)
-                if hasattr(ww, "__iter__"): ww = float(list(ww)[0])
-                else: ww = float(ww)
+                # Use slider values; initialise from DICOM on first slice
+                wc = float(wc_var.get())
+                ww = float(ww_var.get())
+                if idx == 0:
+                    dicom_wc = ds.get("WindowCenter", None)
+                    dicom_ww = ds.get("WindowWidth", None)
+                    if dicom_wc is not None:
+                        if hasattr(dicom_wc, "__iter__"): dicom_wc = float(list(dicom_wc)[0])
+                        else: dicom_wc = float(dicom_wc)
+                        wc_var.set(int(dicom_wc)); wc = dicom_wc
+                        wc_lbl.config(text=str(int(dicom_wc)))
+                    else:
+                        wc_var.set(int(arr.mean())); wc = arr.mean()
+                    if dicom_ww is not None:
+                        if hasattr(dicom_ww, "__iter__"): dicom_ww = float(list(dicom_ww)[0])
+                        else: dicom_ww = float(dicom_ww)
+                        ww_var.set(int(dicom_ww)); ww = dicom_ww
+                        ww_lbl.config(text=str(int(dicom_ww)))
+                    else:
+                        ww_var.set(int(max(arr.std() * 4, 1))); ww = max(arr.std() * 4, 1)
                 lo, hi = wc - ww / 2, wc + ww / 2
                 arr = np.clip((arr - lo) / max(hi - lo, 1) * 255, 0, 255).astype(np.uint8)
                 # Handle RGB
@@ -708,6 +746,15 @@ class DicomNaamApp(tk.Tk):
                 _laad_meta(ds_meta)
             except Exception:
                 pass
+
+        def _on_wl(val=None):
+            _cache.clear()  # clear cache so new WL is applied
+            wc_lbl.config(text=str(wc_var.get()))
+            ww_lbl.config(text=str(ww_var.get()))
+            _toon(int(slider_var.get()))
+
+        wc_slider.config(command=_on_wl)
+        ww_slider.config(command=_on_wl)
 
         def _on_slider(val=None):
             _toon(int(slider_var.get()))
