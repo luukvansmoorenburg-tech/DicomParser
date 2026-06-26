@@ -79,7 +79,7 @@ def onderdeel_undersampling(ds):
         return "CS"
     if "SENSE" in t:
         return "s"
-    return str(techniek)   # onbekende techniek -> ruwe waarde behouden
+    return str(techniek)   # unknowne techniek -> ruwe waarde behouden
 
 
 def onderdeel_acquisitietijd(ds):
@@ -93,7 +93,7 @@ def onderdeel_acquisitietijd(ds):
     seconden = _getal(zoek_tag(ds, "AcquisitionDuration",
                                (0x0018, 0x9073), (0x2005, 0x1033)))
     if seconden is None:
-        return "geenTijd"
+        return "noTime"
     # Omrekenen naar minuten + seconden, bv. 143 s -> '2m23s'.
     totaal = round(seconden)
     minuten, sec = divmod(totaal, 60)
@@ -106,7 +106,7 @@ def onderdeel_slicethickness(ds):
     """Slice thickness -> uit SliceThickness (0018,0050), in mm."""
     dikte = zoek_tag(ds, "SliceThickness", (0x0018, 0x0050))
     if dikte is None:
-        return "geenDikte"
+        return "noThick"
     return f"{_nummer(dikte)}mm"
 
 
@@ -346,7 +346,7 @@ def protocol_naam_weging(ds):
 # ---------------------------------------------------------------------------
 
 def _dti_richtingen(ds):
-    """Geeft het aantal diffusie-richtingen terug, of None als onbekend.
+    """Geeft het aantal diffusie-richtingen terug, of None als unknown.
 
     Probeert achtereenvolgens:
       - (0018,9089) DiffusionGradientOrientation  (geneste SQ -> items tellen)
@@ -495,7 +495,16 @@ def onderdeel_weging(ds):
         _is_survey = (re.search(_loc_pattern, protocol_bound) is not None or
                       re.search(_loc_pattern, series_bound) is not None)
     if _is_survey:
-        orig = series_orig.strip() or protocol_orig.strip()
+        serie_strip = series_orig.strip()
+        prot_strip  = protocol_orig.strip()
+        # Als seriebeschrijving alleen een oriëntatie-woord is (ax, sag, cor, tra),
+        # gebruik dan de protocolnaam die meer context bevat.
+        _oriëntatie = {"AX", "SAG", "COR", "TRA", "AXIAL", "SAGITTAL",
+                       "CORONAL", "TRANSVERSAL", "WSAG", "WCOR", "WTRA"}
+        if serie_strip.upper() in _oriëntatie and prot_strip:
+            orig = prot_strip
+        else:
+            orig = serie_strip or prot_strip
         return orig if orig else "Survey"
 
     # EPI detectie ook op SeriesDescription als ScanningSequence geen EP bevat
@@ -724,8 +733,8 @@ def onderdeel_weging(ds):
         if is_se:
             return "SE-EPI"
         # GRE-EPI: TFE-EPI vs FFE-EPI niet te onderscheiden uit standaard tags
-        # -> onbekend, handmatige popup
-        return "onbekend"
+        # -> unknown, handmatige popup
+        return "unknown"
 
     # --- d. Inversion Recovery -----------------------------------------------
     if is_ir:
@@ -757,7 +766,7 @@ def onderdeel_weging(ds):
                     return naam("T1FLAIR")
                 return naam("FLAIR")
 
-        # IR met onbekend TI of tussenliggende waarde zonder verdere info
+        # IR met unknown TI of tussenliggende waarde zonder verdere info
         return naam("IR")
 
     # --- e0. GRaSE: ScanningSequence bevat zowel GR als SE -------------------
@@ -781,20 +790,20 @@ def onderdeel_weging(ds):
         # T2FFE: TE > 15ms én flip angle < 25° vereist
         flip = _getal(ds.get("FlipAngle"))      # (0018,1314)
         if te is None:
-            return naam("onbekend")
+            return naam("unknown")
         if te < GRE_TE_T1:
             return naam("T1FFE")
         if te > GRE_TE_T2:
             if flip is not None and flip < GRE_FA_T2:
                 return naam("T2FFE")
-            return naam("onbekend")
-        # TE tussen 10-15 ms: altijd onbekend -> popup
-        return naam("onbekend")
+            return naam("unknown")
+        # TE tussen 10-15 ms: altijd unknown -> popup
+        return naam("unknown")
 
     # --- f. Spin Echo / Turbo Spin Echo --------------------------------------
     if is_se:
         if te is None or tr is None:
-            return naam("onbekend")
+            return naam("unknown")
         # mDixon TSE: ImageType bevat Dixon-sleutelwoorden op SE-sequentie
         if any(k in img_type for k in ("DIXON", "WATER", "FAT", "IN_PHASE",
                                         "INPHASE", "OUT_PHASE", "OUTPHASE")):
@@ -815,12 +824,12 @@ def onderdeel_weging(ds):
         # 30-55 ms of lange TR -> PD
         if tr > TR_LANG:
             return naam("PD")
-        # TE kort maar TR niet kort genoeg voor T1, of middellange TE -> onbekend
-        return naam("onbekend")
+        # TE kort maar TR niet kort genoeg voor T1, of middellange TE -> unknown
+        return naam("unknown")
 
-    # --- g. Fallback: ScanningSequence ontbreekt of onbekend -----------------
+    # --- g. Fallback: ScanningSequence ontbreekt of unknown -----------------
     if tr is None or te is None:
-        return naam("onbekend")
+        return naam("unknown")
     if te > TE_LANG:
         return naam("T2")
     if te < TE_KORT and tr < TR_KORT:
@@ -831,8 +840,7 @@ def onderdeel_weging(ds):
 
 
 # Wegingen waarbij het script er NIET zeker van is -> popup voor handmatige invoer.
-ONZEKERE_WEGINGEN = {"mixed", "onbekend", "3Dmixed", "3Donbekend",
-                     "3Dmixed", "3Donbekend"}
+ONZEKERE_WEGINGEN = {"mixed", "unknown", "3Dmixed", "3Dunknown"}
 
 
 def naam_is_onzeker(resultaat):
@@ -1016,7 +1024,7 @@ def maak_naam(ds):
     # Geen fs/mt suffix op DWI-familie, EPI of afgeleide beelden
     _geen_suffix_prefixen = ("DWI", "DTI", "ADC", "DWIBS", "TSEDWI", "IRIS-DWI",
                              "MultiShotDWI", "EPI", "fMRI", "ASL", "3dASL",
-                             "IVIM", "onbekend", "3Donbekend", "mixed", "3Dmixed",
+                             "IVIM", "unknown", "3Dunknown", "mixed", "3Dmixed",
                              "T2SSh", "4dFB", "GRaSE", "T2-MRCP", "3DT2-MRCP", "MRS", "SVS",
                              "CSI", "T2map", "T1map", "T2*map", "T1rho", "QSM",
                              "SWIp", "PCA", "TOF", "MRA", "MRE")
@@ -1236,7 +1244,7 @@ def schrijf_csv(resultaten, csv_pad):
 
 
 # ---------------------------------------------------------------------------
-# POPUP VOOR HANDMATIGE NAAM (bij onbekende techniek, bv. DWI)
+# POPUP VOOR HANDMATIGE NAAM (bij unknowne techniek, bv. DWI)
 # ---------------------------------------------------------------------------
 
 def vraag_naam_popup(resultaat):
@@ -1264,7 +1272,7 @@ def vraag_naam_popup(resultaat):
     ttk.Label(
         rij,
         text="Deze serie kon niet automatisch herkend worden\n"
-             "(onbekende acquisitietechniek, bv. DWI).",
+             "(unknowne acquisitietechniek, bv. DWI).",
         font=("Segoe UI", 10, "bold"),
     ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 12))
 
