@@ -181,10 +181,15 @@ class DicomNaamApp(tk.Tk):
         self._undo_btn.pack(side="left", padx=(16, 0))
         self.bind("<Control-z>", lambda e: self._undo())
 
-        tk.Button(toolbar, text="✔  Apply names", font=FONT_B,
+        tk.Button(toolbar, text="✔  Copy & rename elsewhere", font=FONT_B,
                   bg=ACCENT, fg=WHITE, padx=14, pady=4,
                   relief="flat", cursor="hand2",
                   command=self._toepassen).pack(side="right", padx=(8, 0))
+
+        tk.Button(toolbar, text="✎  Rename in same folder", font=FONT_B,
+                  bg="#107c10", fg=WHITE, padx=14, pady=4,
+                  relief="flat", cursor="hand2",
+                  command=self._rename_inplace).pack(side="right", padx=(0, 6))
 
         tk.Button(toolbar, text="🌐  Browser", font=FONT,
                   padx=10, pady=4,
@@ -415,6 +420,50 @@ class DicomNaamApp(tk.Tk):
     # -----------------------------------------------------------------------
     # APPLY NAMES
     # -----------------------------------------------------------------------
+    def _rename_inplace(self):
+        """Rename ProtocolName in-place in the original folder."""
+        pad = self._bron_map.get().strip()
+        if not messagebox.askyesno(
+                "Rename in same folder",
+                f"This will modify the ProtocolName tag in the original files:\n\n{pad}\n\n"
+                "The folder structure, filenames and all other tags remain unchanged.\n\n"
+                "Continue?"):
+            return
+
+        naam_map = {}
+        for item_id in self._tabel.get_children():
+            vals = self._tabel.item(item_id, "values")
+            naam_map[vals[0]] = vals[3]
+
+        for r in self._alle_resultaten_per_bestand:
+            nr = str(r.get("serienummer", ""))
+            if nr in naam_map:
+                r["naam"] = naam_map[nr]
+
+        self._bouw_voortgang_scherm(len(self._alle_resultaten_per_bestand))
+
+        thread = threading.Thread(
+            target=self._schrijf_inplace_thread,
+            args=(self._alle_resultaten_per_bestand,),
+            daemon=True)
+        thread.start()
+
+    def _schrijf_inplace_thread(self, resultaten):
+        totaal = len(resultaten)
+        for i, r in enumerate(resultaten):
+            self.after(0, self._update_voortgang, i + 1, totaal, r["bestand"])
+            try:
+                ds = pydicom.dcmread(r["bestand"], force=True)
+                ds.ProtocolName = dn._veilige_mapnaam(r["naam"])
+                ds.save_as(r["bestand"])   # overwrite in place
+            except Exception:
+                pass
+
+        self.after(0, lambda: messagebox.showinfo(
+            "Done",
+            f"Done! ProtocolName updated in {totaal} file(s) in the original folder."))
+        self.after(0, self._bouw_kiezer_scherm)
+
     def _toepassen(self):
         pad = self._bron_map.get().strip()
 

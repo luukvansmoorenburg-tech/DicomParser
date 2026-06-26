@@ -487,7 +487,9 @@ def onderdeel_weging(ds):
 
     # SURVEY / LOCALIZER -> originele naam behouden (EERSTE check, vóór VIEW!)
     _survey_trefwoorden = ("SURVEY", "PLANSCAN", "LOCALIZER", "SCOUT", "MOBIVIEW",
-                           "MINIP", "TRANCE")
+                           "MINIP", "TRANCE",
+                           "SMARTBRAIN", "SMARTKNEE", "SMARTSPINE",
+                           "SMARTHEART", "SMARTBREAST")
     _is_survey = any(k in protocol_norm or k in series_norm
                      for k in _survey_trefwoorden)
     if not _is_survey:
