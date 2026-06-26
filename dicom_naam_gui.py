@@ -211,28 +211,46 @@ class DicomNaamApp(tk.Tk):
         thread.start()
 
     def _verwerk_thread(self, pad, bestanden):
-        resultaten = []
-        totaal = len(bestanden)
+        import concurrent.futures, threading
 
-        for i, b in enumerate(bestanden):
-            self.after(0, self._update_voortgang, i + 1, totaal, b)
+        totaal = len(bestanden)
+        resultaten = []
+        teller = threading.Lock()
+        gedaan = [0]
+
+        def verwerk_een(b):
             r = dn.verwerk_bestand(b)
-            if r is not None:
-                resultaten.append(r)
+            with teller:
+                gedaan[0] += 1
+                self.after(0, self._update_voortgang, gedaan[0], totaal, b)
+            return r
+
+        # Use 8 threads for parallel file reading (I/O bound)
+        workers = min(8, max(1, totaal // 50))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+            for r in pool.map(verwerk_een, bestanden):
+                if r is not None:
+                    resultaten.append(r)
 
         series = dn.groepeer_per_serie(resultaten)
 
-        # Sort by patient name + study + series number
+        # Sort by study_uid first (keeps all series from same exam together)
+        # then series number within each study
         def _sort_sleutel(r):
-            patient = (r.get("patient_naam", "") or r.get("patient_id", "")).upper()
-            studie  = r.get("studie_uid", "") or r.get("studie_datum", "")
+            studie = r.get("studie_uid", "") or r.get("studie_datum", "") or \
+                     r.get("patient_naam", "") or r.get("patient_id", "")
             try:
                 nr = int(r.get("serienummer", 0))
             except (ValueError, TypeError):
                 nr = 0
-            return (patient, studie, nr)
+            return (studie, nr)
 
         self._resultaten = sorted(series, key=_sort_sleutel)
+        # Backfill composite serie_uid for files where SeriesInstanceUID was absent
+        for r in resultaten:
+            if not r.get("serie_uid"):
+                r["serie_uid"] = (f"{r.get('studie_uid','')}#{r.get('serienummer','')}"
+                                   or r["bestand"])
         self._alle_resultaten_per_bestand = resultaten
 
         self.after(0, self._bouw_overzicht_scherm)
@@ -536,6 +554,7 @@ class DicomNaamApp(tk.Tk):
         try:
             serie_uid = getattr(self, "_geselecteerde_serie_uid", "")
             # Filter by exact serie_uid for precise matching
+
             if serie_uid:
                 recs = [r for r in alle if r.get("serie_uid", "") == serie_uid]
             if not recs:
@@ -549,7 +568,10 @@ class DicomNaamApp(tk.Tk):
                 recs = [r for r in alle
                         if str(r.get("serienummer", "")) == serie_nr]
             if not recs:
-                messagebox.showinfo("No images", f"No DICOM files found for series {serie_nr}.")
+                messagebox.showinfo("No images",
+                    f"Series {serie_nr}: 0 files found.\n"
+                    f"UID used: {serie_uid[:50] if serie_uid else '(empty — using study+nr)'}\n"
+                    f"Study: {getattr(self,'_geselecteerde_studie','')[:50]}")
                 return
             # Sort by InstanceNumber from already-read metadata
             def _inst_nr(r):
@@ -564,7 +586,7 @@ class DicomNaamApp(tk.Tk):
             return
 
         popup = tk.Toplevel(self)
-        popup.title(f"Series viewer — {serie_naam}")
+        popup.title(f"Series viewer — {serie_naam} [{len(bestanden)} slices]")
         popup.geometry("560x620")
         BG = self._theme["BG"]; FG = self._theme["FG"]
         popup.configure(bg=BG)

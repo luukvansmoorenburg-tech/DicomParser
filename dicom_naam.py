@@ -226,6 +226,7 @@ PROTOCOL_SLEUTELWOORDEN = [
     ("TRUFI",        "bFFE",          False),   # Siemens-naam voor SSFP
     ("MFFE",         "mFFE",          False),   # multi-echo FFE
     ("T2FFE",        "T2FFE",         False),   # T2* gradient echo
+    ("T2WFFE",       "T2FFE",         False),   # T2-weighted FFE (bv. AI_T2W_FFE)
     ("T2STAR",       "T2FFE",         False),
     ("T1FFE",        "T1FFE",         False),   # T1 gradient echo
     ("MPRAGE",       "T1TFE",         True),    # Siemens 3D IR-prepped GRE -> 3DT1TFE
@@ -1169,6 +1170,8 @@ def groepeer_per_serie(resultaten):
         uid = r.get("serie_uid") or ""
         if not uid:
             uid = f"{r.get('studie_uid','')}#{r.get('serienummer','')}" or r["bestand"]
+            r = dict(r)          # copy so we don't mutate the original
+            r["serie_uid"] = uid  # store composite key so viewer can find all files
         if uid not in series:
             eerste = dict(r)
             eerste["aantal_slices"] = 1
