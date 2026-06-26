@@ -51,17 +51,26 @@ def onderdeel_undersampling(ds):
         bevat 'CS'    -> CS   (bv. 'CSSENSE')
         bevat 'SENSE' -> s    (bv. 'SENSE')
     """
-    # MotionFree = CS-SENSE MultiVANE -> 'MF' vervangt het hele undersampling-deel
-    protocol = str(ds.get("ProtocolName", "")).upper().replace(" ", "").replace("-", "").replace("_", "")
-    if "MOTIONFREE" in protocol:
-        return "MF"
-
     techniek = zoek_tag(ds, (0x2005, 0x1710),
                         "ParallelAcquisitionTechnique", (0x0018, 0x9078))
-    if not techniek:
-        return "noPI"   # geen parallel imaging gevonden
 
-    t = str(techniek).upper().replace(" ", "").replace("_", "")
+    t = str(techniek).upper().replace(" ", "").replace("_", "") if techniek else ""
+
+    # MotionFree = CS-SENSE + MultiVANE/Propeller trajectory
+    # Detecteer CS eerst, dan controleer of het een MultiVANE-sequentie is
+    is_cs = "CS" in t
+    if is_cs:
+        for naam_tag in ("ProtocolName", "SeriesDescription"):
+            naam = str(ds.get(naam_tag, "")).upper().replace(" ", "").replace("-", "").replace("_", "")
+            if any(k in naam for k in ("MOTIONFREE", "MULTIVANE", "PROPELLER")):
+                return "MF"
+            # SeriesDescription begint met 'MF' + CS = MotionFree
+            if naam.startswith("MF") and len(naam) > 2 and naam[2].isalpha():
+                return "MF"
+
+    if not techniek or t in ("NONE", ""):
+        return "noPI"
+
     if "AI" in t:
         return "PI"
     if "SMARTSPEEDPREC" in t or "SMARTSPEED" in t:
@@ -271,13 +280,7 @@ PROTOCOL_SLEUTELWOORDEN = [
     # --- Spin Echo / TSE / 3D varianten -------------------------------------
     ("SPACE",        "T2",            True),    # Siemens 3D TSE
     ("CUBE",         "T2",            True),    # GE 3D TSE
-    ("VISTA",        "T2",            True),    # Philips 3D TSE (oud)
-    ("BRAINVIEW",    "T2",            True),    # Philips 3D TSE nieuw
-    ("MSKVIEW",      "T2",            True),
-    ("SPINEVIEW",    "T2",            True),
-    ("PELVISVIEW",   "T2",            True),
-    ("BREASTVIEW",   "T2",            True),
-    ("VIEW",         "T2",            True),    # generieke Philips View catch-all
+    # VIEW-varianten: afgehandeld in STAP 0 (T1/T2 uit tags, BB-suffix)
     ("3DT2",         "T2",            True),
     ("3DT1",         "T1",            True),
     ("3DPD",         "PD",            True),
@@ -290,14 +293,25 @@ PROTOCOL_SLEUTELWOORDEN = [
 def protocol_naam_weging(ds):
     """Zoek de ProtocolName op bekende sleutelwoorden (meest-specifiek eerst).
 
+    Korte sleutelwoorden (<= 3 tekens, bv. 'IR', 'PD', 'T1', 'T2') vereisen
+    een woordgrens zodat 'IR' niet matcht in 'PIRADS'.
     Geeft (weging_string, forceer_3d) terug, of None als niets matcht.
     """
     protocol = str(ds.get("ProtocolName", "")).upper().replace(" ", "")
     if not protocol:
         return None
+    protocol_norm = protocol.replace("-", "").replace("_", "")
     for sleutel, weging, forceer_3d in PROTOCOL_SLEUTELWOORDEN:
-        if sleutel.replace("-", "").replace("_", "") in protocol.replace("-", "").replace("_", ""):
-            return weging, forceer_3d
+        sleutel_norm = sleutel.replace("-", "").replace("_", "")
+        if len(sleutel_norm) <= 2:
+            # Woordgrens vereist voor zeer korte sleutelwoorden (IR, PD, T1, T2)
+            # zodat 'IR' niet matcht in 'PIRADS'
+            pattern = r'(?<![A-Z0-9])' + re.escape(sleutel_norm) + r'(?![A-Z0-9])'
+            if re.search(pattern, protocol_norm):
+                return weging, forceer_3d
+        else:
+            if sleutel_norm in protocol_norm:
+                return weging, forceer_3d
     return None
 
 
@@ -424,7 +438,18 @@ def onderdeel_weging(ds):
     # STAP 0 — VANE-varianten (voor normale protocol-lookup, eigen logica)
     # =========================================================================
     protocol_raw = str(ds.get("ProtocolName", "")).upper()
+    series_raw   = str(ds.get("SeriesDescription", "")).upper()
+    # Strip Philips WIP-prefix voor matching
     protocol_norm = protocol_raw.replace(" ", "").replace("-", "").replace("_", "")
+    if protocol_norm.startswith("WIP"):
+        protocol_norm = protocol_norm[3:]
+    series_norm = series_raw.replace(" ", "").replace("-", "").replace("_", "")
+    if series_norm.startswith("WIP"):
+        series_norm = series_norm[3:]
+
+    # EPI detectie ook op SeriesDescription als ScanningSequence geen EP bevat
+    if not is_ep and any(k in series_norm for k in ("FEEPI", "GREEPI", "EPI")):
+        is_ep = True
 
     # MRE (MR Elastography): techniek-suffix uit protocolnaam of ScanningSequence
     if "MRE" in protocol_norm or "ELASTOGRAPH" in protocol_norm:
@@ -523,6 +548,41 @@ def onderdeel_weging(ds):
     # 4D VANE / 4D Freebreathing
     if "4DVANE" in protocol_norm or "4DFREEBREATHING" in protocol_norm or "4DFB" in protocol_norm:
         return "4dFB"
+
+    # VIEW-sequenties (BrainVIEW, SpineVIEW, PelvisVIEW etc.)
+    # Naam ophalen, BB-suffix toevoegen, weging bepalen uit tags
+    _view_namen = ("BRAINVIEW", "SPINEVIEW", "PELVISVIEW", "BREASTVIEW",
+                   "MSKVIEW", "NERVEVIEW", "VISTA")
+    _view_hit = next((v for v in _view_namen
+                      if v in protocol_norm or v in series_norm), None)
+    if _view_hit or ("VIEW" in protocol_norm or "VIEW" in series_norm):
+        # Specifieke naam of generiek VIEW
+        if _view_hit == "NERVEVIEW":
+            return "3dNerveView"
+        if _view_hit == "BRAINVIEW":
+            view_naam = "BrainView"
+        elif _view_hit == "SPINEVIEW":
+            view_naam = "SpineView"
+        elif _view_hit == "PELVISVIEW":
+            view_naam = "PelvisView"
+        elif _view_hit == "BREASTVIEW":
+            view_naam = "BreastView"
+        elif _view_hit == "MSKVIEW":
+            view_naam = "MSKView"
+        elif _view_hit == "VISTA":
+            view_naam = "View"
+        else:
+            view_naam = "View"
+        # BlackBlood suffix
+        src = protocol_norm + series_norm
+        # Weging bepalen uit TR/TE (niet uit protocol naam om circulaire match te voorkomen)
+        view_weging = "T2"
+        if tr is not None and te is not None:
+            if tr < TR_KORT:
+                view_weging = "T1"
+            elif te > TE_LANG:
+                view_weging = "T2"
+        return f"3D{view_weging}-{view_naam}"
 
     # 3D VANE: check op mDixon in ImageType voor suffix
     if "3DVANE" in protocol_norm:
@@ -662,6 +722,9 @@ def onderdeel_weging(ds):
             return naam("T2")
         if te < TE_KORT and tr < TR_KORT:
             return naam("T1")       # korte TE én korte TR -> T1
+        # 3D TSE met korte TR: TE tot 45ms nog T1 (bv. BrainVIEW T1W TR=700 TE=35)
+        if is_3d and tr < TR_KORT and te < 45:
+            return naam("T1")
         # 30-55 ms of lange TR -> PD
         if tr > TR_LANG:
             return naam("PD")
@@ -717,8 +780,13 @@ def zoek_tag(ds, *tags):
     # Eerst snel op topniveau proberen (goedkoper dan de hele boom doorlopen).
     for t in tags:
         val = ds.get(t)
-        if val not in (None, ""):
-            return val
+        if val is not None:
+            # ds.get() geeft een DataElement terug; extraheer de waarde.
+            # str(DataElement) bevat de VR (bv. 'CS: SENSE') wat fout-matches geeft.
+            if hasattr(val, "value"):
+                val = val.value
+            if val not in (None, ""):
+                return val
 
     # Daarna recursief door alle sequences heen.
     def loop(dataset):
@@ -766,12 +834,16 @@ def _is_recon(ds):
 
     Standaard ImageType: eerste waarde 'DERIVED' bevestigt het.
     """
-    recon_nr = _getal(zoek_tag(ds, (0x2001, 0x101D)))
-    if recon_nr is not None and recon_nr > 1:
-        return True
+    # ReconstructionNumber tag is te breed op Philips (ook normale series > 1)
+    # -> alleen ImageType DERIVED en expliciete MIP/MPR protocol namen gebruiken
 
     img_type = str(ds.get("ImageType", "")).upper()
     if img_type.startswith("DERIVED"):
+        return True
+
+    protocol = str(ds.get("ProtocolName", "")).upper().replace(" ", "").replace("-", "").replace("_", "")
+    series   = str(ds.get("SeriesDescription", "")).upper().replace(" ", "").replace("-", "").replace("_", "")
+    if any(k in protocol or k in series for k in ("MIP", "MPR", "MINIP")):
         return True
 
     return False
@@ -799,11 +871,13 @@ def _heeft_fatsat(ds):
     if "FAT" in sss:
         return True
 
-    seq_variant = str(ds.get("SequenceVariant", "")).upper()
-    if "SP" in seq_variant:
-        return True
-
     return False
+
+
+def _heeft_bb(ds):
+    """True als de ProtocolName '_BB' of 'BB' bevat (Black Blood techniek)."""
+    protocol = str(ds.get("ProtocolName", "")).upper().replace(" ", "").replace("-", "").replace("_", "")
+    return "BB" in protocol
 
 
 def _heeft_mt(ds):
@@ -832,22 +906,35 @@ def _heeft_mt(ds):
 def maak_naam(ds):
     undersampling = onderdeel_undersampling(ds)
     weging = onderdeel_weging(ds)
-    if _heeft_fatsat(ds):
+    # Geen fs/mt suffix op DWI-familie, EPI of afgeleide beelden
+    _geen_suffix_prefixen = ("DWI", "DTI", "ADC", "DWIBS", "TSEDWI", "IRIS-DWI",
+                             "MultiShotDWI", "SSh", "EPI", "fMRI", "ASL", "3dASL",
+                             "IVIM", "onbekend", "3Donbekend", "mixed", "3Dmixed")
+    _heeft_geen_suffix = any(weging.startswith(p) for p in _geen_suffix_prefixen)
+    if _heeft_fatsat(ds) and not _heeft_geen_suffix:
         weging = weging + "fs"
-    if _heeft_mt(ds):
+    if _heeft_mt(ds) and not _heeft_geen_suffix:
         weging = weging + "mt"
+
+    # fMRI/EPI gebruikt altijd SENSE, nooit CS-SENSE
+    if weging in {"fMRI", "EPI"} and undersampling == "CS":
+        undersampling = "s"
+
+    bb       = ["BB"] if _heeft_bb(ds) else []
+    tijd     = onderdeel_acquisitietijd(ds)
+    dikte    = onderdeel_slicethickness(ds)
+
+    # Geen parallel imaging -> naam begint direct met de weging
+    if undersampling == "noPI":
+        if _is_recon(ds):
+            return SCHEIDINGSTEKEN.join([weging] + bb + ["recon"])
+        return SCHEIDINGSTEKEN.join([weging] + bb + [tijd, dikte])
 
     # Post-processed reconstructies (MPR, subtractie, MIP): geen tijd/dikte
     if _is_recon(ds):
-        return SCHEIDINGSTEKEN.join([undersampling, weging, "recon"])
+        return SCHEIDINGSTEKEN.join([undersampling, weging] + bb + ["recon"])
 
-    delen = [
-        undersampling,
-        weging,
-        onderdeel_acquisitietijd(ds),
-        onderdeel_slicethickness(ds),
-    ]
-    return SCHEIDINGSTEKEN.join(delen)
+    return SCHEIDINGSTEKEN.join([undersampling, weging] + bb + [tijd, dikte])
 
 
 # SOP Class UID van een gewoon MR-beeld ("MR Image Storage").
