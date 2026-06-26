@@ -107,7 +107,7 @@ def onderdeel_slicethickness(ds):
     dikte = zoek_tag(ds, "SliceThickness", (0x0018, 0x0050))
     if dikte is None:
         return "geenDikte"
-    return f"{float(dikte):.1f}mm"
+    return f"{_nummer(dikte)}mm"
 
 
 # ---------------------------------------------------------------------------
@@ -202,6 +202,8 @@ PROTOCOL_SLEUTELWOORDEN = [
     # --- Inversion Recovery --------------------------------------------------
     ("PSIR",         "PSIR",          False),   # phase sensitive IR
     ("DIR",          "DIR",           False),   # double inversion recovery
+    ("3DT1FLAIR",    "T1FLAIR",       True),
+    ("T1FLAIR",      "T1FLAIR",       False),
     ("3DFLAIR",      "FLAIR",         True),
     ("FLAIR",        "FLAIR",         False),
     ("3DSTIR",       "STIR",          True),
@@ -646,6 +648,9 @@ def onderdeel_weging(ds):
         # mDixon: verfijn naar W/F/IP/OP/ALL op basis van ImageType.
         if weging == "mDixon":
             weging = _mdixon_weging(img_type)
+        # FLAIR: TE < 50ms = T1 FLAIR, TE >= 50ms = gewone (T2) FLAIR
+        if weging == "FLAIR" and te is not None and te < 50:
+            weging = "T1FLAIR"
         # ADC is altijd een afgeleid beeld, nooit 3D-prefix
         _nooit_3d = {"ADC", "DWI", "DTI", "DWIBS", "TSEDWI", "IRIS-DWI",
                      "fMRI", "EPI", "SWIp", "QSM"}
@@ -717,6 +722,9 @@ def onderdeel_weging(ds):
             if ti < TI_STIR:
                 return naam("STIR")
             if ti >= TI_FLAIR:
+                # TE < 50ms = T1 FLAIR, anders gewone (T2) FLAIR
+                if te is not None and te < 50:
+                    return naam("T1FLAIR")
                 return naam("FLAIR")
 
         # IR met onbekend TI of tussenliggende waarde zonder verdere info
@@ -959,8 +967,9 @@ def maak_naam(ds):
     _heeft_geen_suffix = any(weging.startswith(p) for p in _geen_suffix_prefixen)
     if _heeft_fatsat(ds) and not _heeft_geen_suffix:
         weging = weging + "fs"
-    if _heeft_mt(ds) and not _heeft_geen_suffix:
-        weging = weging + "mt"
+    # MT-suffix uitgeschakeld op verzoek (te veel valse positieven)
+    # if _heeft_mt(ds) and not _heeft_geen_suffix:
+    #     weging = weging + "mt"
 
     # fMRI/EPI gebruikt altijd SENSE, nooit CS-SENSE
     if weging in {"fMRI", "EPI"} and undersampling == "CS":

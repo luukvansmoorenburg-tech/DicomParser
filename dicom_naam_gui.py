@@ -147,7 +147,16 @@ class DicomNaamApp(tk.Tk):
 
         # Groepeer per serie
         series = dn.groepeer_per_serie(resultaten)
-        self._resultaten = series
+        # Sorteren: eerst per patiënt (naam + studie), dan op serienummer
+        def _sort_sleutel(r):
+            patiënt = (r.get("patient_naam", "") or r.get("patient_id", "")).upper()
+            studie  = r.get("studie_uid", "") or r.get("studie_datum", "")
+            try:
+                nr = int(r.get("serienummer", 0))
+            except (ValueError, TypeError):
+                nr = 0
+            return (patiënt, studie, nr)
+        self._resultaten = sorted(series, key=_sort_sleutel)
         self._alle_resultaten_per_bestand = resultaten
 
         self.after(0, self._bouw_overzicht_scherm)
