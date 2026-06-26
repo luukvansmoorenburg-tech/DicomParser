@@ -266,9 +266,9 @@ PROTOCOL_SLEUTELWOORDEN = [
     ("GRASE3D",      "GRaSE",         True),
 
     # --- DRIVE / RESTORE (driven equilibrium TSE) ----------------------------
-    ("DRIVE",        "T2Drive",       True),    # Philips -> 3DT2Drive
-    ("RESTORE",      "T2Drive",       True),    # Siemens equivalent
-    ("FRFSE",        "T2Drive",       True),    # GE equivalent
+    ("DRIVE",        "T2Drive",       False),   # 3D prefix alleen als MRAcquisitionType=3D
+    ("RESTORE",      "T2Drive",       False),   # Siemens equivalent
+    ("FRFSE",        "T2Drive",       False),   # GE equivalent
 
     # Cine: afgehandeld in STAP 0 (view-suffix detectie)
 
