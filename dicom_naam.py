@@ -934,14 +934,21 @@ def _is_recon(ds):
     # ReconstructionNumber tag is te breed op Philips (ook normale series > 1)
     # -> alleen ImageType DERIVED en expliciete MIP/MPR protocol namen gebruiken
 
-    img_type = str(ds.get("ImageType", "")).upper()
-    if img_type.startswith("DERIVED"):
-        return True
-
+    # Only flag as recon based on explicit protocol/series name keywords.
+    # ImageType checks removed — too many false positives on non-Philips scanners.
     protocol = str(ds.get("ProtocolName", "")).upper().replace(" ", "").replace("-", "").replace("_", "")
     series   = str(ds.get("SeriesDescription", "")).upper().replace(" ", "").replace("-", "").replace("_", "")
-    if any(k in protocol or k in series for k in ("MIP", "MPR", "MINIP", "RECON")):
-        return True
+    # Use word-boundary style check: keyword must not be embedded in a longer word
+    # e.g. "PRECISE" should NOT match "RECON" even if letters overlap
+    for k in ("MIP", "MPR", "MINIP", "RECON"):
+        for src in (protocol, series):
+            idx = src.find(k)
+            while idx != -1:
+                before = idx == 0 or not src[idx-1].isalpha()
+                after  = idx+len(k) >= len(src) or not src[idx+len(k)].isalpha()
+                if before and after:
+                    return True
+                idx = src.find(k, idx+1)
 
     return False
 
@@ -1162,26 +1169,50 @@ def groepeer_per_serie(resultaten):
 
     serie_lijst = list(series.values())
 
-    # Herstel undersampling voor recon-series:
-    # zoek per studie een niet-recon serie met dezelfde weging als bron.
-    studie_undersampling = {}  # studie_uid -> {weging_prefix -> undersampling}
-    for r in serie_lijst:
-        if "_recon" not in r.get("naam", "") and r.get("undersampling", "noPI") != "noPI":
-            studie = r.get("studie_uid", "")
-            weging = r.get("weging", "")
-            studie_undersampling.setdefault(studie, {})[weging] = r["undersampling"]
+    # -----------------------------------------------------------------------
+    # Detecteer afgeleide series op basis van serie-nummer patroon:
+    # X01 = basereeks, X02/X03/... = afgeleid van X01 in dezelfde studie.
+    # Afgeleide series krijgen naam van de basereeks zonder tijd/dikte + _recon.
+    # -----------------------------------------------------------------------
 
+    # Bouw index: (studie_uid, base_nr) -> basereeks-resultaat
+    base_index = {}
     for r in serie_lijst:
-        if "_recon" in r.get("naam", "") and r.get("undersampling", "noPI") == "noPI":
-            studie = r.get("studie_uid", "")
-            weging = r.get("weging", "")
-            bronnen = studie_undersampling.get(studie, {})
-            # Exacte match, anders eerste beschikbare undersampling in studie
-            us = bronnen.get(weging) or (next(iter(bronnen.values())) if bronnen else None)
-            if us:
-                r["undersampling"] = us
-                # Naam opnieuw opbouwen met de juiste undersampling
-                r["naam"] = f"{us}_{weging}_recon"
+        studie = r.get("studie_uid", "")
+        try:
+            nr = int(r.get("serienummer", 0))
+        except (ValueError, TypeError):
+            continue
+        if nr % 100 == 1:                       # X01 = basereeks
+            base_nr = (nr // 100) * 100 + 1
+            base_index[(studie, base_nr)] = r
+
+    # Pas afgeleide series aan
+    for r in serie_lijst:
+        studie = r.get("studie_uid", "")
+        try:
+            nr = int(r.get("serienummer", 0))
+        except (ValueError, TypeError):
+            continue
+        if nr % 100 == 0 or nr % 100 == 1:
+            continue                             # basereeks, niet aanpassen
+        base_nr = (nr // 100) * 100 + 1
+        basis = base_index.get((studie, base_nr))
+        if basis is None:
+            continue
+        # Gebruik naam van basereeks: undersampling + weging + _recon
+        basis_naam = basis.get("naam", "")
+        # Strip tijd en dikte van de basisnaam (laatste 2 _-onderdelen)
+        delen = basis_naam.split("_")
+        # Verwijder tijds- en dikte-componenten achteraan
+        while delen and (delen[-1].endswith("mm") or
+                         delen[-1].endswith("s") or
+                         delen[-1] == "noTime" or
+                         delen[-1] == "noThick"):
+            delen.pop()
+        prefix = "_".join(delen) if delen else basis_naam
+        r["naam"] = f"{prefix}_recon"
+        r["undersampling"] = basis.get("undersampling", r.get("undersampling", ""))
 
     return serie_lijst
 

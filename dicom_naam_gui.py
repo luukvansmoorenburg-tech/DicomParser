@@ -15,14 +15,52 @@ import threading
 import tkinter as tk
 from tkinter import filedialog, ttk, messagebox
 
+import json
 import dicom_naam as dn
 import pydicom
+
+# Config file stored next to the exe (or script)
+_CONFIG_PAD = os.path.join(os.path.dirname(sys.executable
+              if getattr(sys, "frozen", False) else __file__),
+              "dicom_naam_config.json")
+
+def _laad_config():
+    try:
+        with open(_CONFIG_PAD, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def _sla_config_op(data):
+    try:
+        with open(_CONFIG_PAD, "w") as f:
+            json.dump(data, f)
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
 # COLOURS / STYLE
 # ---------------------------------------------------------------------------
-BG       = "#f5f5f5"
+THEMES = {
+    "light": {
+        "BG":     "#f5f5f5",
+        "FG":     "#1a1a1a",
+        "ENTRY":  "#ffffff",
+        "ROW_A":  "#ffffff",
+        "ROW_B":  "#f0f4f8",
+        "SEL":    "#e8f0fe",
+    },
+    "dark": {
+        "BG":     "#1e1e1e",
+        "FG":     "#e0e0e0",
+        "ENTRY":  "#2d2d2d",
+        "ROW_A":  "#252526",
+        "ROW_B":  "#2d2d2d",
+        "SEL":    "#094771",
+    },
+}
+
 ACCENT   = "#0078d4"
 WHITE    = "#ffffff"
 FONT     = ("Segoe UI", 10)
@@ -34,14 +72,42 @@ class DicomNaamApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("DICOM Sequence Name Generator")
-        self.configure(bg=BG)
         self.resizable(True, True)
         self.minsize(700, 420)
+        self._dark = False      # start in light mode
+        self._theme = THEMES["light"]
 
         self._bron_map = tk.StringVar()
         self._resultaten = []
         self._alle_bestanden = []
 
+        # Load saved preference
+        cfg = _laad_config()
+        self._dark = cfg.get("dark_mode", False)
+        self._theme = THEMES["dark"] if self._dark else THEMES["light"]
+
+        self._pas_thema_toe()
+        self._bouw_kiezer_scherm()
+
+    def _pas_thema_toe(self):
+        t = self._theme
+        self.configure(bg=t["BG"])
+        # Update ttk style for Treeview
+        style = ttk.Style(self)
+        style.theme_use("clam")
+        style.configure("Treeview",
+                        background=t["ROW_A"], foreground=t["FG"],
+                        fieldbackground=t["ROW_A"], rowheight=24)
+        style.configure("Treeview.Heading",
+                        background=ACCENT, foreground=WHITE)
+        style.map("Treeview", background=[("selected", t["SEL"])],
+                  foreground=[("selected", t["FG"])])
+
+    def _wissel_thema(self):
+        self._dark = not self._dark
+        self._theme = THEMES["dark"] if self._dark else THEMES["light"]
+        _sla_config_op({"dark_mode": self._dark})
+        self._pas_thema_toe()
         self._bouw_kiezer_scherm()
 
     # -----------------------------------------------------------------------
@@ -50,21 +116,31 @@ class DicomNaamApp(tk.Tk):
     def _bouw_kiezer_scherm(self):
         self._wis_scherm()
         self.geometry("640x280")
+        t = self._theme
+        BG = t["BG"]; FG = t["FG"]
 
         frm = tk.Frame(self, bg=BG, padx=30, pady=30)
         frm.pack(fill="both", expand=True)
 
-        tk.Label(frm, text="DICOM Sequence Name Generator",
-                 font=FONT_H, bg=BG).grid(row=0, column=0, columnspan=3,
-                                           sticky="w", pady=(0, 20))
+        # Small theme toggle top-right
+        lbl = "☀" if self._dark else "🌙"
+        tk.Button(self, text=lbl, font=("Segoe UI", 11),
+                  bg=t["ENTRY"], fg=FG, relief="flat", cursor="hand2",
+                  width=2, command=self._wissel_thema).place(relx=1.0, x=-8, y=6, anchor="ne")
 
-        tk.Label(frm, text="DICOM folder:", font=FONT, bg=BG).grid(
+        tk.Label(frm, text="DICOM Sequence Name Generator",
+                 font=FONT_H, bg=BG, fg=FG).grid(row=0, column=0, columnspan=3,
+                                                   sticky="w", pady=(0, 20))
+
+        tk.Label(frm, text="DICOM folder:", font=FONT, bg=BG, fg=FG).grid(
             row=1, column=0, sticky="w", padx=(0, 10))
 
         tk.Entry(frm, textvariable=self._bron_map, font=FONT,
+                 bg=t["ENTRY"], fg=FG, insertbackground=FG,
                  width=45).grid(row=1, column=1, sticky="ew")
 
         tk.Button(frm, text="Browse…", font=FONT,
+                  bg=t["ENTRY"], fg=FG,
                   command=self._kies_map).grid(row=1, column=2, padx=(8, 0))
 
         frm.columnconfigure(1, weight=1)
@@ -87,15 +163,16 @@ class DicomNaamApp(tk.Tk):
     def _bouw_voortgang_scherm(self, totaal):
         self._wis_scherm()
         self.geometry("640x220")
+        BG = self._theme["BG"]; FG = self._theme["FG"]
 
         frm = tk.Frame(self, bg=BG, padx=30, pady=30)
         frm.pack(fill="both", expand=True)
 
         tk.Label(frm, text="Processing…",
-                 font=FONT_H, bg=BG).pack(anchor="w")
+                 font=FONT_H, bg=BG, fg=FG).pack(anchor="w")
 
         self._status_lbl = tk.Label(frm, text="Loading files…",
-                                    font=FONT, bg=BG, anchor="w")
+                                    font=FONT, bg=BG, fg=FG, anchor="w")
         self._status_lbl.pack(anchor="w", pady=(10, 4))
 
         self._prog_var = tk.DoubleVar()
@@ -103,7 +180,7 @@ class DicomNaamApp(tk.Tk):
                                           maximum=totaal, length=560)
         self._prog_bar.pack(fill="x")
 
-        self._pct_lbl = tk.Label(frm, text="0%", font=FONT, bg=BG)
+        self._pct_lbl = tk.Label(frm, text="0%", font=FONT, bg=BG, fg=FG)
         self._pct_lbl.pack(anchor="e", pady=(2, 0))
 
     def _update_voortgang(self, gedaan, totaal, bestandsnaam):
@@ -167,19 +244,29 @@ class DicomNaamApp(tk.Tk):
         self._wis_scherm()
         self.geometry("1100x650")
         self._undo_stack = []
+        BG = self._theme["BG"]; FG = self._theme["FG"]
 
         # Toolbar
         toolbar = tk.Frame(self, bg=BG, padx=12, pady=8)
         toolbar.pack(fill="x")
 
         tk.Label(toolbar, text="Generated Names Overview",
-                 font=FONT_H, bg=BG).pack(side="left")
+                 font=FONT_H, bg=BG, fg=FG).pack(side="left")
 
         self._undo_btn = tk.Button(toolbar, text="↩  Undo", font=FONT,
                   padx=10, pady=4, state="disabled",
                   command=self._undo)
         self._undo_btn.pack(side="left", padx=(16, 0))
         self.bind("<Control-z>", lambda e: self._undo())
+
+        self._view_btn = tk.Button(toolbar, text="👁  View series", font=FONT,
+                  padx=10, pady=4, state="disabled",
+                  command=self._open_viewer)
+        self._view_btn.pack(side="left", padx=(8, 0))
+
+        tk.Button(toolbar, text="🗑  Delete selected", font=FONT,
+                  padx=10, pady=4, fg="#c00000",
+                  command=self._verwijder_geselecteerd).pack(side="left", padx=(8, 0))
 
         tk.Button(toolbar, text="✔  Copy & rename elsewhere", font=FONT_B,
                   bg=ACCENT, fg=WHITE, padx=14, pady=4,
@@ -208,7 +295,7 @@ class DicomNaamApp(tk.Tk):
         headers = ("Series #", "Series description",
                    "Original ProtocolName", "New name  (double-click to edit)")
 
-        tbl_frm = tk.Frame(self, bg=BG)
+        tbl_frm = tk.Frame(self, bg=self._theme["BG"])
         tbl_frm.pack(fill="both", expand=True, padx=12, pady=(0, 12))
 
         vsb = ttk.Scrollbar(tbl_frm, orient="vertical")
@@ -238,6 +325,9 @@ class DicomNaamApp(tk.Tk):
         self._tabel.tag_configure("recon",
                                    background="#d1ecf1", foreground="#0c5460")
 
+        # Map item_id -> resultaat record for quick lookup
+        self._rij_naar_resultaat = {}
+
         # Fill table grouped by patient/study
         huidige_studie = None
         for r in self._resultaten:
@@ -263,24 +353,28 @@ class DicomNaamApp(tk.Tk):
             else:
                 rij_tag = ()
 
-            self._tabel.insert("", "end", values=(
+            item_id = self._tabel.insert("", "end", values=(
                 r.get("serienummer", ""),
                 r.get("seriebeschrijving", ""),
                 r.get("origineel_protocol", ""),
                 naam_val,
             ), tags=rij_tag)
+            self._rij_naar_resultaat[item_id] = r
 
         self._tabel.bind("<Double-1>", self._bewerk_cel)
+        self._tabel.bind("<<TreeviewSelect>>", self._on_selectie)
+        self._tabel.bind("<Button-1>", lambda e: self.after(100, self._on_selectie))
 
         # Legend
-        leg_frm = tk.Frame(self, bg=BG)
+        _bg = self._theme["BG"]; _fg = self._theme["FG"]
+        leg_frm = tk.Frame(self, bg=_bg)
         leg_frm.pack(pady=(0, 6))
-        tk.Label(leg_frm, text="■", fg="#856404", bg=BG, font=FONT).pack(side="left")
-        tk.Label(leg_frm, text=" Unknown  ", bg=BG, font=("Segoe UI", 9), fg="#666").pack(side="left")
-        tk.Label(leg_frm, text="■", fg="#0c5460", bg=BG, font=FONT).pack(side="left")
-        tk.Label(leg_frm, text=" Recon  ", bg=BG, font=("Segoe UI", 9), fg="#666").pack(side="left")
+        tk.Label(leg_frm, text="■", fg="#856404", bg=_bg, font=FONT).pack(side="left")
+        tk.Label(leg_frm, text=" Unknown  ", bg=_bg, font=("Segoe UI", 9), fg=_fg).pack(side="left")
+        tk.Label(leg_frm, text="■", fg="#0c5460", bg=_bg, font=FONT).pack(side="left")
+        tk.Label(leg_frm, text=" Recon  ", bg=_bg, font=("Segoe UI", 9), fg=_fg).pack(side="left")
         tk.Label(leg_frm, text="Double-click a name to edit it.",
-                 font=("Segoe UI", 9), bg=BG, fg="#666").pack(side="left", padx=(16, 0))
+                 font=("Segoe UI", 9), bg=_bg, fg=_fg).pack(side="left", padx=(16, 0))
 
     # -----------------------------------------------------------------------
     # EXPORT
@@ -348,6 +442,174 @@ class DicomNaamApp(tk.Tk):
     # -----------------------------------------------------------------------
     # UNDO
     # -----------------------------------------------------------------------
+    def _verwijder_geselecteerd(self):
+        """Delete selected series rows from the overview (not from disk)."""
+        sel = [i for i in self._tabel.selection()
+               if "patient_header" not in self._tabel.item(i, "tags")]
+        if not sel:
+            messagebox.showinfo("Nothing selected", "Please select one or more series rows to delete.")
+            return
+        namen = [self._tabel.set(i, "nieuw") or self._tabel.set(i, "beschrijving")
+                 for i in sel]
+        preview = "\n".join(f"  • {n}" for n in namen[:10])
+        if len(namen) > 10:
+            preview += f"\n  … and {len(namen)-10} more"
+        if not messagebox.askyesno(
+                "Confirm delete",
+                f"Remove {len(sel)} series from the overview?\n\n{preview}\n\n"
+                "This only removes them from this list — no files are deleted."):
+            return
+        for i in sel:
+            self._rij_naar_resultaat.pop(i, None)
+            self._tabel.delete(i)
+
+    def _on_selectie(self, event=None):
+        """Enable View button and remember selected series."""
+        self._geselecteerde_serie_nr = None
+        for item_id in self._tabel.selection():
+            tags = self._tabel.item(item_id, "tags")
+            if "patient_header" not in tags:
+                self._geselecteerde_serie_nr = self._tabel.set(item_id, "serie")
+                self._geselecteerde_naam = self._tabel.set(item_id, "nieuw")
+                # Store the exact serie_uid for precise file matching
+                r = self._rij_naar_resultaat.get(item_id, {})
+                self._geselecteerde_serie_uid = r.get("serie_uid", "")
+                self._geselecteerde_studie = r.get("studie_uid", "")
+                self._view_btn.config(state="normal")
+                return
+        self._view_btn.config(state="disabled")
+
+    def _open_viewer(self):
+        """Open a slice viewer for the selected series."""
+        try:
+            from PIL import Image, ImageTk
+            import numpy as np
+        except Exception as e:
+            messagebox.showerror("Missing library", f"Cannot load viewer: {e}")
+            return
+        try:
+            self._open_viewer_impl(Image, ImageTk, np)
+        except Exception as e:
+            messagebox.showerror("Viewer error", f"Error opening viewer:\n{e}")
+
+    def _open_viewer_impl(self, Image, ImageTk, np):
+
+        serie_nr   = getattr(self, "_geselecteerde_serie_nr", None)
+        serie_naam = getattr(self, "_geselecteerde_naam", "")
+        if not serie_nr:
+            messagebox.showinfo("No selection", "Please click a series row first, then click View.")
+            return
+
+        alle = getattr(self, "_alle_resultaten_per_bestand", [])
+        if not alle:
+            messagebox.showinfo("No data", "No series data available. Please run the renaming first.")
+            return
+
+        try:
+            serie_uid = getattr(self, "_geselecteerde_serie_uid", "")
+            # Filter by exact serie_uid for precise matching
+            if serie_uid:
+                recs = [r for r in alle if r.get("serie_uid", "") == serie_uid]
+            else:
+                studie = getattr(self, "_geselecteerde_studie", "")
+                recs = [r for r in alle
+                        if str(r.get("serienummer", "")) == serie_nr
+                        and (not studie or r.get("studie_uid", "") == studie)]
+            if not recs:
+                messagebox.showinfo("No images", f"No DICOM files found for series {serie_nr}.")
+                return
+            # Sort by InstanceNumber from already-read metadata
+            def _inst_nr(r):
+                try:
+                    ds = pydicom.dcmread(r["bestand"], force=True, stop_before_pixels=True)
+                    return int(getattr(ds, "InstanceNumber", 0))
+                except Exception:
+                    return 0
+            bestanden = sorted([r["bestand"] for r in recs], key=lambda p: _inst_nr({"bestand": p}))
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not load series: {e}")
+            return
+
+        popup = tk.Toplevel(self)
+        popup.title(f"Series viewer — {serie_naam}")
+        popup.geometry("560x620")
+        BG = self._theme["BG"]; FG = self._theme["FG"]
+        popup.configure(bg=BG)
+
+        info_lbl = tk.Label(popup, text="", font=FONT, bg=BG, fg=FG)
+        info_lbl.pack(pady=(8, 0))
+
+        canvas = tk.Canvas(popup, bg="#000000", width=512, height=512)
+        canvas.pack(padx=12, pady=8)
+
+        slider_var = tk.IntVar(value=0)
+        slider = ttk.Scale(popup, from_=0, to=len(bestanden)-1,
+                           variable=slider_var, orient="horizontal")
+        slider.pack(fill="x", padx=12, pady=(0, 8))
+
+        _cache = {}
+        _tk_img = [None]
+
+        def _laad_slice(idx):
+            if idx in _cache:
+                return _cache[idx]
+            try:
+                ds = pydicom.dcmread(bestanden[idx], force=True)
+                raw = ds.pixel_array
+                # Handle multi-frame (Enhanced MR): pick middle frame
+                while raw.ndim > 2:
+                    raw = raw[raw.shape[0] // 2]
+                arr = raw.astype(float)
+                slope = float(getattr(ds, "RescaleSlope", 1))
+                intercept = float(getattr(ds, "RescaleIntercept", 0))
+                arr = arr * slope + intercept
+                wc = ds.get("WindowCenter", None)
+                ww = ds.get("WindowWidth", None)
+                if wc is None: wc = arr.mean()
+                if ww is None: ww = max(arr.std() * 4, 1)
+                if hasattr(wc, "__iter__"): wc = float(list(wc)[0])
+                else: wc = float(wc)
+                if hasattr(ww, "__iter__"): ww = float(list(ww)[0])
+                else: ww = float(ww)
+                lo, hi = wc - ww / 2, wc + ww / 2
+                arr = np.clip((arr - lo) / max(hi - lo, 1) * 255, 0, 255).astype(np.uint8)
+                # Handle RGB
+                if arr.ndim == 3:
+                    img = Image.fromarray(arr)
+                else:
+                    img = Image.fromarray(arr, mode="L").convert("RGB")
+                img = img.resize((512, 512), Image.LANCZOS)
+                _cache[idx] = img
+                return img
+            except Exception as e:
+                info_lbl.config(text=f"Error loading slice {idx+1}: {e}")
+                return None
+
+        def _toon(idx):
+            img = _laad_slice(idx)
+            if img is None:
+                return
+            _tk_img[0] = ImageTk.PhotoImage(img)
+            canvas.delete("all")
+            canvas.create_image(256, 256, image=_tk_img[0])
+            info_lbl.config(text=f"Slice {idx + 1} / {len(bestanden)}")
+
+        def _on_slider(val=None):
+            _toon(int(slider_var.get()))
+
+        def _on_scroll(event):
+            cur = int(slider_var.get())
+            delta = -1 if event.delta > 0 else 1
+            new = max(0, min(len(bestanden) - 1, cur + delta))
+            slider_var.set(new)
+            _toon(new)
+
+        slider.config(command=_on_slider)
+        canvas.bind("<MouseWheel>", _on_scroll)
+        popup.bind("<MouseWheel>", _on_scroll)
+
+        _toon(0)
+
     def _undo(self):
         if not self._undo_stack:
             return
