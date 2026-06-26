@@ -69,6 +69,14 @@ def onderdeel_undersampling(ds):
                 return "MF"
 
     if not techniek or t in ("NONE", ""):
+        # Geen PI-tag gevonden -> controleer protocolnaam op 'AI_' prefix
+        # (GE-conventie: AI_ = AI-reconstructie zoals op MEEI-dataset)
+        for naam_tag in ("ProtocolName", "SeriesDescription"):
+            naam = str(ds.get(naam_tag, "")).upper().replace(" ", "").replace("-", "")
+            if naam.startswith("AI_") or naam.startswith("AI"):
+                # Controleer of het echt een AI-prefix is (gevolgd door niet-letter)
+                if len(naam) > 2 and not naam[2].isdigit():
+                    return "AI"
         return "noPI"
 
     if "SMARTSPEEDPREC" in t or "SMARTSPEED" in t:
