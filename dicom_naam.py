@@ -71,10 +71,10 @@ def onderdeel_undersampling(ds):
     if not techniek or t in ("NONE", ""):
         return "noPI"
 
-    if "AI" in t:
-        return "AI"
     if "SMARTSPEEDPREC" in t or "SMARTSPEED" in t:
-        return "AI"
+        return "PI"   # SmartSpeed Precision -> PI (Philips AI reconstruction)
+    if "AI" in t:
+        return "AI"   # CS_SENSE_AI of vergelijkbaar -> AI
     if "CS" in t:
         return "CS"
     if "SENSE" in t:
