@@ -587,7 +587,7 @@ class DicomNaamApp(tk.Tk):
 
         popup = tk.Toplevel(self)
         popup.title(f"Series viewer — {serie_naam} [{len(bestanden)} slices]")
-        popup.geometry("560x620")
+        popup.geometry("560x680")
         BG = self._theme["BG"]; FG = self._theme["FG"]
         popup.configure(bg=BG)
 
@@ -595,12 +595,50 @@ class DicomNaamApp(tk.Tk):
         info_lbl.pack(pady=(8, 0))
 
         canvas = tk.Canvas(popup, bg="#000000", width=512, height=512)
-        canvas.pack(padx=12, pady=8)
+        canvas.pack(padx=12, pady=4)
 
         slider_var = tk.IntVar(value=0)
         slider = ttk.Scale(popup, from_=0, to=len(bestanden)-1,
                            variable=slider_var, orient="horizontal")
-        slider.pack(fill="x", padx=12, pady=(0, 8))
+        slider.pack(fill="x", padx=12, pady=(0, 4))
+
+        # Metadata panel
+        meta_lbl = tk.Label(popup, text="", font=("Consolas", 9),
+                            bg=BG, fg=FG, justify="left")
+        meta_lbl.pack(pady=(0, 6))
+
+        def _laad_meta(ds):
+            tr    = ds.get("RepetitionTime")
+            te    = ds.get("EchoTime")
+            dikte = ds.get("SliceThickness")
+            ps    = ds.get("PixelSpacing")
+            dur   = ds.get("AcquisitionDuration") or \
+                    dn.zoek_tag(ds, "AcquisitionDuration", (0x0018, 0x9073))
+            parts = []
+            if tr is not None:
+                parts.append(f"TR: {float(tr):.0f} ms")
+            if te is not None:
+                parts.append(f"TE: {float(te):.1f} ms")
+            if ps is not None:
+                try:
+                    row, col = float(ps[0]), float(ps[1])
+                    z = float(dikte) if dikte is not None else None
+                    if z is not None:
+                        parts.append(f"Voxel: {row:.2f}×{col:.2f}×{z:.1f} mm")
+                    else:
+                        parts.append(f"Voxel: {row:.2f}×{col:.2f} mm")
+                except Exception:
+                    pass
+            elif dikte is not None:
+                parts.append(f"Thickness: {float(dikte):.1f} mm")
+            if dur is not None:
+                try:
+                    s = round(float(dur))
+                    m, sec = divmod(s, 60)
+                    parts.append(f"Scan time: {m}m{sec:02d}s" if m else f"Scan time: {sec}s")
+                except Exception:
+                    pass
+            meta_lbl.config(text="   ".join(parts) if parts else "")
 
         _cache = {}
         _tk_img = [None]
@@ -648,6 +686,13 @@ class DicomNaamApp(tk.Tk):
             canvas.delete("all")
             canvas.create_image(256, 256, image=_tk_img[0])
             info_lbl.config(text=f"Slice {idx + 1} / {len(bestanden)}")
+            # Load metadata from DICOM (only first slice, cached implicitly via ds)
+            try:
+                ds_meta = pydicom.dcmread(bestanden[idx], force=True,
+                                          stop_before_pixels=True)
+                _laad_meta(ds_meta)
+            except Exception:
+                pass
 
         def _on_slider(val=None):
             _toon(int(slider_var.get()))
