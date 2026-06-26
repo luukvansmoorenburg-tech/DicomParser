@@ -72,13 +72,13 @@ def onderdeel_undersampling(ds):
         return "noPI"
 
     if "AI" in t:
-        return "PI"
+        return "AI"
     if "SMARTSPEEDPREC" in t or "SMARTSPEED" in t:
-        return "PI"
+        return "AI"
     if "CS" in t:
         return "CS"
     if "SENSE" in t:
-        return "s"
+        return "S"
     return str(techniek)   # unknowne techniek -> ruwe waarde behouden
 
 
@@ -556,6 +556,12 @@ def onderdeel_weging(ds):
         return "Cine"
 
     # SyntAc (Synthetic MRI): 2D -> SyntAc, 3D -> 3dSyntAc
+    # DWI-MB: Multi-Band DWI (simultaneous multi-slice)
+    if ("DWI" in protocol_norm or "DWI" in series_norm) and \
+       (re.search(r'(?<![A-Z0-9])MB(?![A-Z0-9])', protocol_bound) or
+        re.search(r'(?<![A-Z0-9])MB(?![A-Z0-9])', series_bound)):
+        return "DWI-MB"
+
     if "SYNTAC" in protocol_norm:
         return "3dSyntAc" if is_3d else "SyntAc"
 
@@ -1159,7 +1165,10 @@ def groepeer_per_serie(resultaten):
     """
     series = {}
     for r in resultaten:
-        uid = r.get("serie_uid") or r["bestand"]
+        # Prefer SeriesInstanceUID; fall back to (StudyUID, SeriesNumber) when absent
+        uid = r.get("serie_uid") or ""
+        if not uid:
+            uid = f"{r.get('studie_uid','')}#{r.get('serienummer','')}" or r["bestand"]
         if uid not in series:
             eerste = dict(r)
             eerste["aantal_slices"] = 1
@@ -1197,6 +1206,26 @@ def groepeer_per_serie(resultaten):
         if nr % 100 == 0 or nr % 100 == 1:
             continue                             # basereeks, niet aanpassen
         base_nr = (nr // 100) * 100 + 1
+        # Behoud specifieke namen voor ADC/DWI/spectro-varianten
+        naam_huidig = r.get("naam", "")
+        weging_huidig = r.get("weging", "")
+        orig = (r.get("seriebeschrijving", "") + r.get("origineel_protocol", "")).upper()
+        _behoud_prefixen = ("ADC", "DWI", "DTI", "DWIBS", "TSEDWI", "MRS",
+                            "SVS", "CSI", "T2map", "T1map", "T2*map")
+        if any(weging_huidig.startswith(p) for p in _behoud_prefixen):
+            continue
+        if "ADC" in orig or "EADC" in orig or "DADC" in orig:
+            # Specifieke ADC-variant namen behouden
+            us = r.get("undersampling", "")
+            prefix = f"{us}_" if us and us != "noPI" else ""
+            if "EADC" in orig or "EADC" in orig.replace(" ", ""):
+                r["naam"] = f"{prefix}eADC"
+            elif "DADC" in orig:
+                r["naam"] = f"{prefix}dADC"
+            else:
+                r["naam"] = f"{prefix}ADC"
+            continue
+
         basis = base_index.get((studie, base_nr))
         if basis is None:
             continue

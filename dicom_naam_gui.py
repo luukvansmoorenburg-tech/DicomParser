@@ -253,42 +253,33 @@ class DicomNaamApp(tk.Tk):
         tk.Label(toolbar, text="Generated Names Overview",
                  font=FONT_H, bg=BG, fg=FG).pack(side="left")
 
-        self._undo_btn = tk.Button(toolbar, text="↩  Undo", font=FONT,
-                  padx=10, pady=4, state="disabled",
-                  command=self._undo)
+        # Uniform button style
+        _btn  = dict(font=FONT,  padx=10, pady=5, relief="flat", cursor="hand2")
+        _btnp = dict(font=FONT_B, padx=10, pady=5, relief="flat", cursor="hand2")
+
+        self._undo_btn = tk.Button(toolbar, text="↩  Undo", state="disabled",
+                  command=self._undo, **_btn)
         self._undo_btn.pack(side="left", padx=(16, 0))
         self.bind("<Control-z>", lambda e: self._undo())
 
-        self._view_btn = tk.Button(toolbar, text="👁  View series", font=FONT,
-                  padx=10, pady=4, state="disabled",
-                  command=self._open_viewer)
-        self._view_btn.pack(side="left", padx=(8, 0))
+        self._view_btn = tk.Button(toolbar, text="👁  View", state="disabled",
+                  command=self._open_viewer, **_btn)
+        self._view_btn.pack(side="left", padx=(6, 0))
 
-        tk.Button(toolbar, text="🗑  Delete selected", font=FONT,
-                  padx=10, pady=4, fg="#c00000",
-                  command=self._verwijder_geselecteerd).pack(side="left", padx=(8, 0))
+        tk.Button(toolbar, text="🗑  Delete", fg="#c00000",
+                  command=self._verwijder_geselecteerd, **_btn).pack(side="left", padx=(6, 0))
 
-        tk.Button(toolbar, text="✔  Copy & rename elsewhere", font=FONT_B,
-                  bg=ACCENT, fg=WHITE, padx=14, pady=4,
-                  relief="flat", cursor="hand2",
-                  command=self._toepassen).pack(side="right", padx=(8, 0))
+        tk.Button(toolbar, text="✔  Copy & rename", bg=ACCENT, fg=WHITE,
+                  command=self._toepassen, **_btnp).pack(side="right", padx=(6, 0))
 
-        tk.Button(toolbar, text="✎  Rename in same folder", font=FONT_B,
-                  bg="#107c10", fg=WHITE, padx=14, pady=4,
-                  relief="flat", cursor="hand2",
-                  command=self._rename_inplace).pack(side="right", padx=(0, 6))
+        tk.Button(toolbar, text="✎  Rename in place", bg="#107c10", fg=WHITE,
+                  command=self._rename_inplace, **_btnp).pack(side="right", padx=(6, 0))
 
-        tk.Button(toolbar, text="🌐  Browser", font=FONT,
-                  padx=10, pady=4,
-                  command=self._exporteer_html).pack(side="right", padx=(0, 4))
+        tk.Button(toolbar, text="📋  Export CSV",
+                  command=self._exporteer_csv, **_btn).pack(side="right", padx=(6, 0))
 
-        tk.Button(toolbar, text="📋  CSV", font=FONT,
-                  padx=10, pady=4,
-                  command=self._exporteer_csv).pack(side="right", padx=(0, 4))
-
-        tk.Button(toolbar, text="Choose new folder", font=FONT,
-                  padx=10, pady=4, command=self._bouw_kiezer_scherm).pack(
-                  side="right")
+        tk.Button(toolbar, text="New folder",
+                  command=self._bouw_kiezer_scherm, **_btn).pack(side="right")
 
         # Table
         cols = ("serie", "beschrijving", "origineel", "nieuw")
@@ -443,25 +434,62 @@ class DicomNaamApp(tk.Tk):
     # UNDO
     # -----------------------------------------------------------------------
     def _verwijder_geselecteerd(self):
-        """Delete selected series rows from the overview (not from disk)."""
+        """Permanently delete selected series files from disk."""
         sel = [i for i in self._tabel.selection()
                if "patient_header" not in self._tabel.item(i, "tags")]
         if not sel:
             messagebox.showinfo("Nothing selected", "Please select one or more series rows to delete.")
             return
+
+        # Collect all files for selected series
+        te_verwijderen = []
+        for i in sel:
+            r = self._rij_naar_resultaat.get(i, {})
+            serie_uid = r.get("serie_uid", "")
+            serie_nr  = str(r.get("serienummer", ""))
+            for rec in getattr(self, "_alle_resultaten_per_bestand", []):
+                if (serie_uid and rec.get("serie_uid") == serie_uid) or \
+                   (not serie_uid and str(rec.get("serienummer", "")) == serie_nr):
+                    te_verwijderen.append(rec["bestand"])
+
         namen = [self._tabel.set(i, "nieuw") or self._tabel.set(i, "beschrijving")
                  for i in sel]
         preview = "\n".join(f"  • {n}" for n in namen[:10])
         if len(namen) > 10:
             preview += f"\n  … and {len(namen)-10} more"
+
         if not messagebox.askyesno(
-                "Confirm delete",
-                f"Remove {len(sel)} series from the overview?\n\n{preview}\n\n"
-                "This only removes them from this list — no files are deleted."):
+                "⚠ Permanently delete files",
+                f"This will PERMANENTLY DELETE {len(te_verwijderen)} files from disk:\n\n"
+                f"{preview}\n\n"
+                "This cannot be undone. Are you sure?",
+                icon="warning"):
             return
+
+        # Second confirmation for safety
+        if not messagebox.askyesno(
+                "⚠ Final confirmation",
+                f"Permanently delete {len(te_verwijderen)} DICOM files?\n\nThis is irreversible.",
+                icon="warning"):
+            return
+
+        errors = []
+        for pad in te_verwijderen:
+            try:
+                os.remove(pad)
+            except Exception as e:
+                errors.append(f"{os.path.basename(pad)}: {e}")
+
+        # Remove from list and internal records
         for i in sel:
             self._rij_naar_resultaat.pop(i, None)
             self._tabel.delete(i)
+
+        deleted = len(te_verwijderen) - len(errors)
+        msg = f"Deleted {deleted} of {len(te_verwijderen)} files."
+        if errors:
+            msg += f"\n\nErrors:\n" + "\n".join(errors[:5])
+        messagebox.showinfo("Done", msg)
 
     def _on_selectie(self, event=None):
         """Enable View button and remember selected series."""
@@ -510,11 +538,16 @@ class DicomNaamApp(tk.Tk):
             # Filter by exact serie_uid for precise matching
             if serie_uid:
                 recs = [r for r in alle if r.get("serie_uid", "") == serie_uid]
-            else:
+            if not recs:
+                # Fallback: match by (study_uid, series_number) for missing SeriesInstanceUID
                 studie = getattr(self, "_geselecteerde_studie", "")
                 recs = [r for r in alle
                         if str(r.get("serienummer", "")) == serie_nr
-                        and (not studie or r.get("studie_uid", "") == studie)]
+                        and r.get("studie_uid", "") == studie]
+            if not recs:
+                # Last resort: series number only
+                recs = [r for r in alle
+                        if str(r.get("serienummer", "")) == serie_nr]
             if not recs:
                 messagebox.showinfo("No images", f"No DICOM files found for series {serie_nr}.")
                 return
@@ -605,8 +638,14 @@ class DicomNaamApp(tk.Tk):
             _toon(new)
 
         slider.config(command=_on_slider)
-        canvas.bind("<MouseWheel>", _on_scroll)
-        popup.bind("<MouseWheel>", _on_scroll)
+        # bind_all captures scroll from any widget in the popup regardless of focus
+        popup.bind_all("<MouseWheel>", _on_scroll)
+        popup.bind("<Up>",   lambda e: _on_scroll(type("E", (), {"delta": 120})()))
+        popup.bind("<Down>", lambda e: _on_scroll(type("E", (), {"delta": -120})()))
+        popup.focus_set()
+        # Unbind when popup closes to avoid affecting main window
+        popup.protocol("WM_DELETE_WINDOW",
+                       lambda: [popup.unbind_all("<MouseWheel>"), popup.destroy()])
 
         _toon(0)
 
