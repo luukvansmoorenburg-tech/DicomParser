@@ -679,6 +679,7 @@ class DicomNaamApp(tk.Tk):
 
         _cache = {}
         _tk_img = [None]
+        _wl_init = [False]   # flag: WL initialised from DICOM only once
 
         def _laad_slice(idx):
             if idx in _cache:
@@ -696,26 +697,28 @@ class DicomNaamApp(tk.Tk):
                 slope = float(getattr(ds, "RescaleSlope", 1))
                 intercept = float(getattr(ds, "RescaleIntercept", 0))
                 arr = arr * slope + intercept
-                # Use slider values; initialise from DICOM on first slice
-                wc = float(wc_var.get())
-                ww = float(ww_var.get())
-                if idx == 0:
+                # Initialise WL from DICOM on very first load only
+                if not _wl_init[0]:
+                    _wl_init[0] = True
                     dicom_wc = ds.get("WindowCenter", None)
                     dicom_ww = ds.get("WindowWidth", None)
                     if dicom_wc is not None:
                         if hasattr(dicom_wc, "__iter__"): dicom_wc = float(list(dicom_wc)[0])
                         else: dicom_wc = float(dicom_wc)
-                        wc_var.set(int(dicom_wc)); wc = dicom_wc
+                        wc_var.set(int(dicom_wc))
                         wc_lbl.config(text=str(int(dicom_wc)))
                     else:
-                        wc_var.set(int(arr.mean())); wc = arr.mean()
+                        wc_var.set(int(arr.mean()))
                     if dicom_ww is not None:
                         if hasattr(dicom_ww, "__iter__"): dicom_ww = float(list(dicom_ww)[0])
                         else: dicom_ww = float(dicom_ww)
-                        ww_var.set(int(dicom_ww)); ww = dicom_ww
+                        ww_var.set(int(dicom_ww))
                         ww_lbl.config(text=str(int(dicom_ww)))
                     else:
-                        ww_var.set(int(max(arr.std() * 4, 1))); ww = max(arr.std() * 4, 1)
+                        ww_var.set(int(max(arr.std() * 4, 1)))
+                # Always use current slider values for rendering
+                wc = float(wc_var.get())
+                ww = float(ww_var.get())
                 lo, hi = wc - ww / 2, wc + ww / 2
                 arr = np.clip((arr - lo) / max(hi - lo, 1) * 255, 0, 255).astype(np.uint8)
                 # Handle RGB
@@ -748,10 +751,11 @@ class DicomNaamApp(tk.Tk):
                 pass
 
         def _on_wl(val=None):
-            _cache.clear()  # clear cache so new WL is applied
+            _cache.clear()   # clear so all slices are re-rendered with new WL
             wc_lbl.config(text=str(wc_var.get()))
             ww_lbl.config(text=str(ww_var.get()))
-            _toon(int(slider_var.get()))
+            cur = int(slider_var.get())
+            _toon(cur)
 
         wc_slider.config(command=_on_wl)
         ww_slider.config(command=_on_wl)
@@ -767,6 +771,31 @@ class DicomNaamApp(tk.Tk):
             _toon(new)
 
         slider.config(command=_on_slider)
+        # Middle-click drag: left/right = Window Level, up/down = Window Width
+        _drag_start = [None, None, None, None]  # [x, y, wc_start, ww_start]
+
+        def _drag_start_fn(event):
+            _drag_start[0] = event.x_root
+            _drag_start[1] = event.y_root
+            _drag_start[2] = wc_var.get()
+            _drag_start[3] = ww_var.get()
+
+        def _drag_move(event):
+            if _drag_start[0] is None:
+                return
+            dx = event.x_root - _drag_start[0]   # horizontal → WC
+            dy = event.y_root - _drag_start[1]   # vertical → WW (up=narrow)
+            new_wc = max(-2000, min(4000, _drag_start[2] + dx * 3))
+            new_ww = max(1, min(8000, _drag_start[3] + dy * 5))
+            wc_var.set(int(new_wc))
+            ww_var.set(int(new_ww))
+            _on_wl()
+
+        canvas.bind("<Button-2>", _drag_start_fn)
+        canvas.bind("<B2-Motion>", _drag_move)
+        popup.bind("<Button-2>", _drag_start_fn)
+        popup.bind("<B2-Motion>", _drag_move)
+
         # bind_all captures scroll from any widget in the popup regardless of focus
         popup.bind_all("<MouseWheel>", _on_scroll)
         popup.bind("<Up>",   lambda e: _on_scroll(type("E", (), {"delta": 120})()))
