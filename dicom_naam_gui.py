@@ -284,6 +284,10 @@ class DicomNaamApp(tk.Tk):
                   command=self._open_viewer, **_btn)
         self._view_btn.pack(side="left", padx=(6, 0))
 
+        self._info_btn = tk.Button(toolbar, text="ℹ  Inspect", state="disabled",
+                  command=self._open_metadata, **_btn)
+        self._info_btn.pack(side="left", padx=(6, 0))
+
         tk.Button(toolbar, text="🗑  Delete", fg="#c00000",
                   command=self._verwijder_geselecteerd, **_btn).pack(side="left", padx=(6, 0))
 
@@ -522,8 +526,96 @@ class DicomNaamApp(tk.Tk):
                 self._geselecteerde_serie_uid = r.get("serie_uid", "")
                 self._geselecteerde_studie = r.get("studie_uid", "")
                 self._view_btn.config(state="normal")
+                self._info_btn.config(state="normal")
                 return
         self._view_btn.config(state="disabled")
+        self._info_btn.config(state="disabled")
+
+    def _open_metadata(self):
+        """Show DICOM metadata for the selected series."""
+        serie_uid = getattr(self, "_geselecteerde_serie_uid", "")
+        serie_nr  = getattr(self, "_geselecteerde_serie_nr", "")
+        serie_naam = getattr(self, "_geselecteerde_naam", "")
+
+        alle = getattr(self, "_alle_resultaten_per_bestand", [])
+        recs = [r for r in alle if r.get("serie_uid", "") == serie_uid] if serie_uid else []
+        if not recs:
+            studie = getattr(self, "_geselecteerde_studie", "")
+            recs = [r for r in alle if str(r.get("serienummer", "")) == serie_nr
+                    and r.get("studie_uid", "") == studie]
+        if not recs:
+            messagebox.showinfo("No data", "No DICOM files found for this series.")
+            return
+
+        try:
+            ds = pydicom.dcmread(recs[0]["bestand"], force=True, stop_before_pixels=True)
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not read DICOM: {e}")
+            return
+
+        BG = self._theme["BG"]; FG = self._theme["FG"]
+        popup = tk.Toplevel(self)
+        popup.title(f"Metadata — {serie_naam}")
+        popup.geometry("680x580")
+        popup.configure(bg=BG)
+
+        # Scrollable text area
+        frm = tk.Frame(popup, bg=BG)
+        frm.pack(fill="both", expand=True, padx=12, pady=12)
+        vsb = ttk.Scrollbar(frm)
+        vsb.pack(side="right", fill="y")
+        txt = tk.Text(frm, font=("Consolas", 9), bg=BG, fg=FG,
+                      yscrollcommand=vsb.set, wrap="none", relief="flat")
+        txt.pack(fill="both", expand=True)
+        vsb.config(command=txt.yview)
+
+        # Key DICOM fields to display
+        fields = [
+            ("--- Patient ---", None),
+            ("PatientName",       ds.get("PatientName", "")),
+            ("PatientID",         ds.get("PatientID", "")),
+            ("PatientBirthDate",  ds.get("PatientBirthDate", "")),
+            ("PatientSex",        ds.get("PatientSex", "")),
+            ("--- Study ---", None),
+            ("StudyDate",         ds.get("StudyDate", "")),
+            ("StudyDescription",  ds.get("StudyDescription", "")),
+            ("StudyInstanceUID",  ds.get("StudyInstanceUID", "")),
+            ("--- Series ---", None),
+            ("SeriesNumber",      ds.get("SeriesNumber", "")),
+            ("SeriesDescription", ds.get("SeriesDescription", "")),
+            ("ProtocolName",      ds.get("ProtocolName", "")),
+            ("Modality",          ds.get("Modality", "")),
+            ("SOPClassUID",       ds.get("SOPClassUID", "")),
+            ("--- Acquisition ---", None),
+            ("MRAcquisitionType", ds.get("MRAcquisitionType", "")),
+            ("ScanningSequence",  ds.get("ScanningSequence", "")),
+            ("SequenceVariant",   ds.get("SequenceVariant", "")),
+            ("RepetitionTime",    ds.get("RepetitionTime", "")),
+            ("EchoTime",          ds.get("EchoTime", "")),
+            ("InversionTime",     ds.get("InversionTime", "")),
+            ("FlipAngle",         ds.get("FlipAngle", "")),
+            ("EchoTrainLength",   ds.get("EchoTrainLength", "")),
+            ("SliceThickness",    ds.get("SliceThickness", "")),
+            ("PixelSpacing",      ds.get("PixelSpacing", "")),
+            ("AcquisitionDuration", ds.get((0x0018, 0x9073), "")),
+            ("NumberOfTemporalPositions", ds.get("NumberOfTemporalPositions", "")),
+            ("TriggerTime",       ds.get("TriggerTime", "")),
+            ("--- Undersampling ---", None),
+            ("ParallelAcquisitionTechnique", ds.get((0x0018, 0x9078), "")),
+            ("Philips (2005,1710)", ds.get((0x2005, 0x1710), "")),
+            ("--- Generated name ---", None),
+            ("New name",          serie_naam),
+            ("Files in series",   str(len(recs))),
+        ]
+
+        for label, value in fields:
+            if value is None:
+                txt.insert("end", f"\n{label}\n", "header")
+            else:
+                txt.insert("end", f"  {label:<35} {value}\n")
+
+        txt.tag_config("header", foreground=ACCENT, font=("Consolas", 9, "bold"))
+        txt.config(state="disabled")
 
     def _open_viewer(self):
         """Open a slice viewer for the selected series."""
