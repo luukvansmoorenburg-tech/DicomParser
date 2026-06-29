@@ -644,6 +644,20 @@ class DicomNaamApp(tk.Tk):
         ww_slider.grid(row=1, column=1, sticky="ew", padx=4)
         wl_frm.columnconfigure(1, weight=1)
 
+        _wl_defaults = [None, None]  # [original_wc, original_ww]
+
+        def _reset_wl():
+            if _wl_defaults[0] is not None:
+                wc_var.set(int(_wl_defaults[0]))
+                ww_var.set(int(_wl_defaults[1]))
+                wc_lbl.config(text=str(int(_wl_defaults[0])))
+                ww_lbl.config(text=str(int(_wl_defaults[1])))
+                _on_wl()
+
+        tk.Button(wl_frm, text="Reset W/L", font=("Segoe UI", 8),
+                  command=_reset_wl, padx=6).grid(
+                  row=0, column=3, rowspan=2, padx=(6, 0), sticky="ns")
+
         # Metadata panel
         meta_lbl = tk.Label(popup, text="", font=("Consolas", 9),
                             bg=BG, fg=FG, justify="left")
@@ -705,17 +719,17 @@ class DicomNaamApp(tk.Tk):
                     if dicom_wc is not None:
                         if hasattr(dicom_wc, "__iter__"): dicom_wc = float(list(dicom_wc)[0])
                         else: dicom_wc = float(dicom_wc)
-                        wc_var.set(int(dicom_wc))
-                        wc_lbl.config(text=str(int(dicom_wc)))
                     else:
-                        wc_var.set(int(arr.mean()))
+                        dicom_wc = arr.mean()
                     if dicom_ww is not None:
                         if hasattr(dicom_ww, "__iter__"): dicom_ww = float(list(dicom_ww)[0])
                         else: dicom_ww = float(dicom_ww)
-                        ww_var.set(int(dicom_ww))
-                        ww_lbl.config(text=str(int(dicom_ww)))
                     else:
-                        ww_var.set(int(max(arr.std() * 4, 1)))
+                        dicom_ww = max(arr.std() * 4, 1)
+                    wc_var.set(int(dicom_wc)); wc_lbl.config(text=str(int(dicom_wc)))
+                    ww_var.set(int(dicom_ww)); ww_lbl.config(text=str(int(dicom_ww)))
+                    _wl_defaults[0] = dicom_wc   # store for reset
+                    _wl_defaults[1] = dicom_ww
                 # Always use current slider values for rendering
                 wc = float(wc_var.get())
                 ww = float(ww_var.get())
