@@ -64,7 +64,10 @@ def onderdeel_undersampling(ds):
             naam = str(ds.get(naam_tag, "")).upper().replace(" ", "").replace("-", "").replace("_", "")
             if any(k in naam for k in ("MOTIONFREE", "MULTIVANE", "PROPELLER")):
                 return "MF"
-            # SeriesDescription begint met 'MF' + CS = MotionFree
+            # Controleer op '_MF_' als woord in de naam (bv. T2_TSE_MF_Tra)
+            if re.search(r'(?<![A-Z0-9])MF(?![A-Z0-9])',
+                         str(ds.get(naam_tag, "")).upper().replace("_", " ")):
+                return "MF"
             if naam.startswith("MF") and len(naam) > 2 and naam[2].isalpha():
                 return "MF"
 
@@ -79,15 +82,20 @@ def onderdeel_undersampling(ds):
                     return "AI"
         return "noPI"
 
+    # K-space trajectorie: PROPELLER bepaalt MF (CS) of MV (SENSE)
+    kspace = str(zoek_tag(ds, "GeometryOfKSpaceTraversal",
+                          (0x0018, 0x9032)) or "").upper()
+    is_propeller = "PROPELLER" in kspace or "RADIAL" in kspace
+
     if "SMARTSPEEDPREC" in t or "SMARTSPEED" in t:
-        return "PI"   # SmartSpeed Precision -> PI (Philips AI reconstruction)
+        return "PI"
     if "AI" in t:
-        return "AI"   # CS_SENSE_AI of vergelijkbaar -> AI
+        return "AI"
     if "CS" in t:
-        return "CS"
+        return "MF" if is_propeller else "CS"   # CS + PROPELLER = MotionFree
     if "SENSE" in t:
-        return "S"
-    return str(techniek)   # unknowne techniek -> ruwe waarde behouden
+        return "MV" if is_propeller else "S"    # SENSE + PROPELLER = MultiVANE
+    return str(techniek)
 
 
 def onderdeel_acquisitietijd(ds):
@@ -738,6 +746,15 @@ def onderdeel_weging(ds):
     # 4D VANE / 4D Freebreathing
     if "4DVANE" in protocol_norm or "4DFREEBREATHING" in protocol_norm or "4DFB" in protocol_norm:
         return "4dFB"
+
+    # RADIAL k-space: met temporale dimensie = 4dFB, zonder = 3DVane
+    kspace_raw = str(zoek_tag(ds, "GeometryOfKSpaceTraversal",
+                              (0x0018, 0x9032)) or "").upper()
+    if "RADIAL" in kspace_raw:
+        n_temp = _getal(ds.get("NumberOfTemporalPositions"))
+        if n_temp is not None and n_temp > 1:
+            return "4dFB"
+        return naam("3DVane")
 
     # VIEW-sequenties (BrainVIEW, SpineVIEW, ProstateVIEW etc.)
     # Naam dynamisch ophalen: woord direct vóór 'VIEW' wordt bewaard.

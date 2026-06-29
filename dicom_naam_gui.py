@@ -58,7 +58,7 @@ def _laad_tag_woordenboek():
 
 _TAG_NAMEN = _laad_tag_woordenboek()
 
-APP_VERSION = "0.15"   # auto-incremented by pre-commit hook (0.01 per commit)
+APP_VERSION = "0.16"   # auto-incremented by pre-commit hook (0.01 per commit)
 
 # Config file stored next to the exe (or script)
 _CONFIG_PAD = os.path.join(os.path.dirname(sys.executable
@@ -641,11 +641,16 @@ class DicomNaamApp(tk.Tk):
             keyword = el.keyword if el.keyword else \
                       _TAG_NAMEN.get((el.tag.group, el.tag.element), "")
             if el.VR == "SQ":
-                txt.insert("end", f"{prefix}{tag_str} {el.VR} {keyword}\n", "header")
-                for i, item in enumerate(el.value):
-                    txt.insert("end", f"{prefix}  -- Item {i+1} --\n")
-                    for sub in item:
+                n = len(el.value) if el.value else 0
+                txt.insert("end",
+                    f"{prefix}{tag_str} {el.VR} {keyword}  [{n} item(s)]\n", "header")
+                if el.value:
+                    # Show first item only to avoid duplicating per-frame tags
+                    for sub in el.value[0]:
                         _show_element(sub, indent + 2)
+                    if n > 1:
+                        txt.insert("end",
+                            f"{prefix}    … ({n-1} more item(s) not shown)\n")
             else:
                 try:
                     val = str(el.value)
