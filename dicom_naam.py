@@ -239,7 +239,7 @@ PROTOCOL_SLEUTELWOORDEN = [
     ("T1FFE",        "T1FFE",         False),   # T1 gradient echo
     ("MPRAGE",       "T1TFE",         True),    # Siemens 3D IR-prepped GRE -> 3DT1TFE
     ("IRTFE",        "T1TFE",         True),    # Philips IR-TFE -> 3DT1TFE (voor TFE!)
-    ("BTFE",         "bTFE",          False),   # balanced TFE (Cine) -> voor TFE!
+    # BTFE: afgehandeld in STAP 0 (3D-bTFE / bTFE-Cine / bTFE onderscheid)
     ("TFE",          "TFE",           False),   # turbo field echo (Philips prep-GRE)
     ("VIBE",         "T1FFE",         True),    # Siemens 3D T1 GRE breath-hold
     ("FLASH",        "T1FFE",         False),   # Siemens GRE naam
@@ -551,6 +551,25 @@ def onderdeel_weging(ds):
         if "SAX" in src or "SA" in src:
             return naam("PSIR-SAX")
         # Geen oriëntatie -> gewone PSIR via protocol-lookup
+
+    # bTFE: onderscheid 3D-bTFE / bTFE-Cine / bTFE op basis van tags
+    if "BTFE" in protocol_norm or "BFFE" in protocol_norm:
+        if is_3d or "3D" in protocol_norm:
+            return "3D-bTFE"
+        # Cardiac Cine: temporal domain of cardiac triggering aanwezig
+        n_temp  = _getal(ds.get("NumberOfTemporalPositions"))
+        n_card  = _getal(ds.get("CardiacNumberOfImages"))
+        trigger = ds.get("TriggerTime")
+        nominal = ds.get("NominalInterval")
+        is_cardiac = (
+            (n_temp is not None and n_temp > 1) or
+            (n_card is not None and n_card > 1) or
+            trigger is not None or
+            nominal is not None
+        )
+        if is_cardiac:
+            return "bTFE-Cine"
+        return naam("bTFE")
 
     # Cine (cardiac): view-suffix op basis van protocolnaam
     if "CINE" in protocol_norm:
