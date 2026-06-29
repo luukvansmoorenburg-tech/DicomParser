@@ -748,6 +748,7 @@ class DicomNaamApp(tk.Tk):
 
         popup = tk.Toplevel(self)
         popup.title(f"Series viewer — {serie_naam} [{len(bestanden)} slices]")
+        popup.attributes("-topmost", True)
         popup.geometry("560x780")
         BG = self._theme["BG"]; FG = self._theme["FG"]
         popup.configure(bg=BG)
