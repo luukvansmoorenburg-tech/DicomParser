@@ -115,7 +115,14 @@ def onderdeel_slicethickness(ds):
     dikte = zoek_tag(ds, "SliceThickness", (0x0018, 0x0050))
     if dikte is None:
         return "noThick"
-    return f"{_nummer(dikte)}mm"
+    try:
+        val = float(dikte)
+        # 2 decimals, strip trailing zeros but keep at least 1 decimal
+        # e.g. 1.201 -> 1.20mm, 4.0 -> 4mm, 2.50 -> 2.5mm
+        formatted = f"{val:.2f}".rstrip("0").rstrip(".")
+        return f"{formatted}mm"
+    except (TypeError, ValueError):
+        return f"{_nummer(dikte)}mm"
 
 
 # ---------------------------------------------------------------------------

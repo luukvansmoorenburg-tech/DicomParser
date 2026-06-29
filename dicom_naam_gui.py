@@ -26,10 +26,12 @@ def _laad_tag_woordenboek():
     """
     woordenboek = {}
     try:
-        # Zoek test1.txt naast de exe of het script
-        basis = os.path.dirname(sys.executable if getattr(sys, "frozen", False)
-                                else __file__)
-        pad = os.path.join(basis, "test1.txt")
+        # Zoek test1.txt: eerst in PyInstaller bundel, dan naast exe/script
+        if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+            pad = os.path.join(sys._MEIPASS, "test1.txt")
+        else:
+            basis = os.path.dirname(__file__)
+            pad = os.path.join(basis, "test1.txt")
         if not os.path.exists(pad):
             return woordenboek
         with open(pad, encoding="utf-8", errors="ignore") as f:
@@ -54,7 +56,7 @@ def _laad_tag_woordenboek():
 
 _TAG_NAMEN = _laad_tag_woordenboek()
 
-APP_VERSION = "0.12"   # auto-incremented by pre-commit hook (0.01 per commit)
+APP_VERSION = "0.13"   # auto-incremented by pre-commit hook (0.01 per commit)
 
 # Config file stored next to the exe (or script)
 _CONFIG_PAD = os.path.join(os.path.dirname(sys.executable
