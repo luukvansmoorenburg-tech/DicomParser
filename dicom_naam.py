@@ -794,7 +794,7 @@ def onderdeel_weging(ds):
             if ti < TI_STIR:
                 return naam("STIR")
             if ti >= TI_FLAIR:
-                # Single Shot FLAIR: ETL > 70
+                # Single Shot FLAIR: ETL > 40
                 if etl is not None and etl > 70:
                     return naam("FLAIR-SSh")
                 # TE < 50ms = T1 FLAIR, anders gewone (T2) FLAIR
@@ -844,7 +844,7 @@ def onderdeel_weging(ds):
         if any(k in img_type for k in ("DIXON", "WATER", "FAT", "IN_PHASE",
                                         "INPHASE", "OUT_PHASE", "OUTPHASE")):
             return naam("T2-mDix")
-        # SSh (single shot TSE / HASTE): ETL > 70
+        # SSh (single shot TSE / HASTE): ETL > 40
         if etl is not None and etl > 70:
             return "T2SSh"
         # T2-MRCP: extreem lange TE (> 400 ms) op SE/TSE
