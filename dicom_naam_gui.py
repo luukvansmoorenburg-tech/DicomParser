@@ -46,7 +46,9 @@ def _laad_tag_woordenboek():
                     try:
                         grp = int(tag_str[:4], 16)
                         el  = int(tag_str[4:], 16)
-                        woordenboek[(grp, el)] = naam
+                        # Keep first occurrence only — file has many duplicates
+                        if (grp, el) not in woordenboek:
+                            woordenboek[(grp, el)] = naam
                     except ValueError:
                         pass
     except Exception:
@@ -56,7 +58,7 @@ def _laad_tag_woordenboek():
 
 _TAG_NAMEN = _laad_tag_woordenboek()
 
-APP_VERSION = "0.14"   # auto-incremented by pre-commit hook (0.01 per commit)
+APP_VERSION = "0.15"   # auto-incremented by pre-commit hook (0.01 per commit)
 
 # Config file stored next to the exe (or script)
 _CONFIG_PAD = os.path.join(os.path.dirname(sys.executable
