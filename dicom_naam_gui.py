@@ -19,7 +19,42 @@ import json
 import dicom_naam as dn
 import pydicom
 
-APP_VERSION = "0.11"   # auto-incremented by pre-commit hook (0.01 per commit)
+
+def _laad_tag_woordenboek():
+    """Laad vriendelijke tagnamen uit test1.txt (Philips tag dictionary).
+    Returns dict: {(group, element) -> friendly_name}
+    """
+    woordenboek = {}
+    try:
+        # Zoek test1.txt naast de exe of het script
+        basis = os.path.dirname(sys.executable if getattr(sys, "frozen", False)
+                                else __file__)
+        pad = os.path.join(basis, "test1.txt")
+        if not os.path.exists(pad):
+            return woordenboek
+        with open(pad, encoding="utf-8", errors="ignore") as f:
+            for regel in f:
+                delen = regel.split("\t")
+                # Format: tag | num | name | type | VR | value
+                if len(delen) < 3:
+                    continue
+                tag_str = delen[0].strip().replace(",", "").replace(" ", "")
+                naam    = delen[2].strip() if len(delen) > 2 else ""
+                if len(tag_str) == 8 and naam:
+                    try:
+                        grp = int(tag_str[:4], 16)
+                        el  = int(tag_str[4:], 16)
+                        woordenboek[(grp, el)] = naam
+                    except ValueError:
+                        pass
+    except Exception:
+        pass
+    return woordenboek
+
+
+_TAG_NAMEN = _laad_tag_woordenboek()
+
+APP_VERSION = "0.12"   # auto-incremented by pre-commit hook (0.01 per commit)
 
 # Config file stored next to the exe (or script)
 _CONFIG_PAD = os.path.join(os.path.dirname(sys.executable
@@ -599,7 +634,8 @@ class DicomNaamApp(tk.Tk):
         def _show_element(el, indent=0):
             prefix = "  " * indent
             tag_str = f"({el.tag.group:04X},{el.tag.element:04X})"
-            keyword = el.keyword if el.keyword else ""
+            keyword = el.keyword if el.keyword else \
+                      _TAG_NAMEN.get((el.tag.group, el.tag.element), "")
             if el.VR == "SQ":
                 txt.insert("end", f"{prefix}{tag_str} {el.VR} {keyword}\n", "header")
                 for i, item in enumerate(el.value):

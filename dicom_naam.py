@@ -422,6 +422,24 @@ def _mrs_weging(protocol_norm):
     return f"{mrs_type}-{techniek}" if techniek else mrs_type
 
 
+def _mdixon_recon_suffix(img_type):
+    """Geeft reconstruction suffix terug: '-W', '-F', '-IP', '-OP', of '' als onbekend.
+    '-ALL' alleen als alle 4 types aanwezig zijn.
+    """
+    has_w  = "WATER" in img_type
+    has_f  = "FAT" in img_type and "APPARENT" not in img_type
+    has_ip = "IN_PHASE" in img_type or "INPHASE" in img_type
+    has_op = "OUT_PHASE" in img_type or "OUTPHASE" in img_type or "OUT-PHASE" in img_type
+
+    if has_w and has_f and has_ip and has_op:
+        return "-ALL"
+    if has_w:   return "-W"
+    if has_f:   return "-F"
+    if has_ip:  return "-IP"
+    if has_op:  return "-OP"
+    return ""   # geen specifieke reconstructie → geen suffix
+
+
 def _mdixon_weging(img_type):
     """Bepaal de mDixon reconstructie-subtype uit ImageType.
 
@@ -438,11 +456,15 @@ def _mdixon_weging(img_type):
         gevonden.append("IP")
     if "OUT_PHASE" in img_type or "OUTPHASE" in img_type or "OUT-PHASE" in img_type:
         gevonden.append("OP")
-    if "DIXON" in img_type and not gevonden:
+    # mDixon-ALL alleen als alle 4 types aanwezig zijn
+    if len(gevonden) == 4:
         return "mDixon-ALL"
     if len(gevonden) == 1:
         return f"mDixon-{gevonden[0]}"
-    return "mDixon-ALL"
+    if len(gevonden) > 1:
+        return "mDixon-ALL"
+    # Geen specifieke reconstructie in ImageType
+    return "mDixon"   # generiek zonder reconstructie-suffix
 
 
 def onderdeel_weging(ds):
@@ -510,12 +532,17 @@ def onderdeel_weging(ds):
         series_bound = series_bound[3:]
 
     # Gecombineerde weging + mDixon TSE
+    # Gebruik protocol_bound (underscores bewaard) voor betere woordgrens-detectie
     _dix_pat = r'(?<![A-Z0-9])(?:DIXON|MDIXON)(?![A-Z0-9])'
-    if re.search(_dix_pat, protocol_norm) or re.search(_dix_pat, series_norm):
+    _pb = protocol_bound.upper().replace("-", " ")
+    _sb = series_bound.upper().replace("-", " ")
+    if re.search(_dix_pat, _pb) or re.search(_dix_pat, _sb):
         for weging_prefix, output in (("T1", "T1-mDix"), ("T2", "T2-mDix"), ("PD", "PD-mDix")):
             _w_pat = r'(?<![A-Z0-9])' + weging_prefix + r'(?![A-Z0-9])'
-            if (re.search(_w_pat, protocol_bound) or re.search(_w_pat, series_bound)):
-                return naam(output)
+            if re.search(_w_pat, _pb) or re.search(_w_pat, _sb):
+                # Voeg reconstructie-suffix toe als ImageType specifiek is
+                rec = _mdixon_recon_suffix(img_type)
+                return naam(f"{output}{rec}" if rec else output)
 
     # Gecombineerde weging + IR (bv. PD IR, T1 IR, T2 IR)
     _ir_pat = r'(?<![A-Z0-9])IR(?![A-Z0-9])'
@@ -869,17 +896,18 @@ def onderdeel_weging(ds):
         if te is None or tr is None:
             return naam("unknown")
         # mDixon TSE: ImageType bevat Dixon-sleutelwoorden op SE-sequentie
-        # Bepaal weging uit TR/TE voor T1/T2/PD onderscheid
+        # Bepaal weging uit TR/TE + reconstructie-suffix uit ImageType
         if any(k in img_type for k in ("DIXON", "WATER", "FAT", "IN_PHASE",
                                         "INPHASE", "OUT_PHASE", "OUTPHASE")):
+            rec = _mdixon_recon_suffix(img_type)
             if te is not None and tr is not None:
                 if te > TE_LANG:
-                    return naam("T2-mDix")
+                    return naam(f"T2-mDix{rec}")
                 if te < TE_KORT and tr < TR_KORT:
-                    return naam("T1-mDix")
+                    return naam(f"T1-mDix{rec}")
                 if tr > TR_LANG:
-                    return naam("PD-mDix")
-            return naam("T2-mDix")   # fallback
+                    return naam(f"PD-mDix{rec}")
+            return naam(f"T2-mDix{rec}")   # fallback
         # T2-MRCP: extreem lange TE (> 400 ms) op SE/TSE
         if te > 400:
             return "T2-MRCP"
