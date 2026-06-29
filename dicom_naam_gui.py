@@ -56,7 +56,7 @@ def _laad_tag_woordenboek():
 
 _TAG_NAMEN = _laad_tag_woordenboek()
 
-APP_VERSION = "0.13"   # auto-incremented by pre-commit hook (0.01 per commit)
+APP_VERSION = "0.14"   # auto-incremented by pre-commit hook (0.01 per commit)
 
 # Config file stored next to the exe (or script)
 _CONFIG_PAD = os.path.join(os.path.dirname(sys.executable

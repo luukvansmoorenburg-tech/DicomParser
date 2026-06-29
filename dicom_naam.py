@@ -617,6 +617,16 @@ def onderdeel_weging(ds):
             return naam("PSIR-SAX")
         # Geen oriëntatie -> gewone PSIR via protocol-lookup
 
+    # Gecombineerde weging + TFE (bv. T1_TFE, T2_TFE)
+    _tfe_pat = r'(?<![A-Z0-9])TFE(?![A-Z0-9])'
+    _pb2 = protocol_bound.upper().replace("-", " ")
+    _sb2 = series_bound.upper().replace("-", " ")
+    if re.search(_tfe_pat, _pb2) or re.search(_tfe_pat, _sb2):
+        for weging_prefix, output in (("T1", "T1TFE"), ("T2", "T2TFE"), ("PD", "PDTFE")):
+            _w_pat = r'(?<![A-Z0-9])' + weging_prefix + r'(?![A-Z0-9])'
+            if re.search(_w_pat, _pb2) or re.search(_w_pat, _sb2):
+                return naam(output)
+
     # bTFE: onderscheid 3D-bTFE / bTFE-Cine / bTFE op basis van tags
     if "BTFE" in protocol_norm or "BFFE" in protocol_norm:
         if is_3d or "3D" in protocol_norm:
@@ -732,14 +742,22 @@ def onderdeel_weging(ds):
     # VIEW-sequenties (BrainVIEW, SpineVIEW, ProstateVIEW etc.)
     # Naam dynamisch ophalen: woord direct vóór 'VIEW' wordt bewaard.
     _src_voor_view = protocol_raw or series_raw
-    _view_match = re.search(r'([A-Za-z]+)VIEW', _src_voor_view, re.IGNORECASE)
+    # Match VIEW ook met underscore/dash separator (bv. FLAIR_VIEW, T1_VIEW)
+    _view_match = re.search(r'([A-Za-z]+)[_\-]?VIEW', _src_voor_view, re.IGNORECASE)
     if _view_match or "VIEW" in protocol_norm or "VIEW" in series_norm:
         if "NERVEVIEW" in protocol_norm or "NERVEVIEW" in series_norm:
             return "3dNerveView"
+        # FLAIR_VIEW -> weging bepalen via TI (is echt FLAIR, niet een VIEW sequence)
+        if "FLAIR" in protocol_norm or "FLAIR" in series_norm:
+            if ti is not None and ti > 0:
+                if ti < TI_STIR:
+                    return naam("STIR")
+                if ti >= TI_FLAIR:
+                    return naam("T1FLAIR") if te is not None and te < 50 else naam("FLAIR")
+            return naam("FLAIR")
         if "VISTA" in protocol_norm or "VISTA" in series_norm:
             view_naam = "View"
         elif _view_match:
-            # Bewaar het prefix-woord met juiste hoofdletters: Brain, Spine, Prostate etc.
             prefix = _view_match.group(1)
             view_naam = prefix.capitalize() + "View"
         else:
