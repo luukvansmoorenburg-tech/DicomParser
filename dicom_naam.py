@@ -258,8 +258,17 @@ PROTOCOL_SLEUTELWOORDEN = [
     ("3DNV",         "NerveView",     True),    # veelgebruikte afkorting
     ("NERVEV",       "NerveView",     True),
 
-    # --- mDixon TSE ----------------------------------------------------------
-    ("MDIXONTSE",    "T2-mDix",       False),
+    # --- mDixon TSE (weging-specifiek) ---------------------------------------
+    ("T1MDIXON",     "T1-mDix",       False),   # T1-weighted mDixon TSE
+    ("T1DIXON",      "T1-mDix",       False),
+    ("MDIXONT1",     "T1-mDix",       False),
+    ("T2MDIXON",     "T2-mDix",       False),   # T2-weighted mDixon TSE
+    ("T2DIXON",      "T2-mDix",       False),
+    ("MDIXONT2",     "T2-mDix",       False),
+    ("PDMDIXON",     "PD-mDix",       False),   # PD-weighted mDixon TSE
+    ("PDDIXON",      "PD-mDix",       False),
+    ("MDIXONPD",     "PD-mDix",       False),
+    ("MDIXONTSE",    "T2-mDix",       False),   # generiek (aanname T2)
     ("DIXONTSE",     "T2-mDix",       False),
     ("TSEDIXON",     "T2-mDix",       False),
     ("TSEMDI",       "T2-mDix",       False),
@@ -499,6 +508,14 @@ def onderdeel_weging(ds):
     series_bound = series_raw.replace(" ", "").replace("-", "").upper()
     if series_bound.startswith("WIP"):
         series_bound = series_bound[3:]
+
+    # Gecombineerde weging + mDixon TSE
+    _dix_pat = r'(?<![A-Z0-9])(?:DIXON|MDIXON)(?![A-Z0-9])'
+    if re.search(_dix_pat, protocol_norm) or re.search(_dix_pat, series_norm):
+        for weging_prefix, output in (("T1", "T1-mDix"), ("T2", "T2-mDix"), ("PD", "PD-mDix")):
+            _w_pat = r'(?<![A-Z0-9])' + weging_prefix + r'(?![A-Z0-9])'
+            if (re.search(_w_pat, protocol_bound) or re.search(_w_pat, series_bound)):
+                return naam(output)
 
     # Gecombineerde weging + IR (bv. PD IR, T1 IR, T2 IR)
     _ir_pat = r'(?<![A-Z0-9])IR(?![A-Z0-9])'
@@ -852,9 +869,17 @@ def onderdeel_weging(ds):
         if te is None or tr is None:
             return naam("unknown")
         # mDixon TSE: ImageType bevat Dixon-sleutelwoorden op SE-sequentie
+        # Bepaal weging uit TR/TE voor T1/T2/PD onderscheid
         if any(k in img_type for k in ("DIXON", "WATER", "FAT", "IN_PHASE",
                                         "INPHASE", "OUT_PHASE", "OUTPHASE")):
-            return naam("T2-mDix")
+            if te is not None and tr is not None:
+                if te > TE_LANG:
+                    return naam("T2-mDix")
+                if te < TE_KORT and tr < TR_KORT:
+                    return naam("T1-mDix")
+                if tr > TR_LANG:
+                    return naam("PD-mDix")
+            return naam("T2-mDix")   # fallback
         # T2-MRCP: extreem lange TE (> 400 ms) op SE/TSE
         if te > 400:
             return "T2-MRCP"
