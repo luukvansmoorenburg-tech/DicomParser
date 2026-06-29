@@ -559,7 +559,7 @@ class DicomNaamApp(tk.Tk):
         popup.geometry("680x580")
         popup.configure(bg=BG)
 
-        # Search bar
+        # Search bar with navigation
         search_frm = tk.Frame(popup, bg=BG)
         search_frm.pack(fill="x", padx=12, pady=(8, 0))
         tk.Label(search_frm, text="Search:", font=FONT, bg=BG, fg=FG).pack(side="left")
@@ -567,6 +567,17 @@ class DicomNaamApp(tk.Tk):
         search_entry = tk.Entry(search_frm, textvariable=search_var, font=FONT,
                                 bg=self._theme["ENTRY"], fg=FG, width=30)
         search_entry.pack(side="left", padx=6)
+
+        match_lbl = tk.Label(search_frm, text="", font=("Segoe UI", 8),
+                             bg=BG, fg=FG, width=8)
+        match_lbl.pack(side="left")
+
+        btn_up   = tk.Button(search_frm, text="▲", font=("Segoe UI", 8),
+                             padx=4, pady=1)
+        btn_up.pack(side="left", padx=(2, 0))
+        btn_down = tk.Button(search_frm, text="▼", font=("Segoe UI", 8),
+                             padx=4, pady=1)
+        btn_down.pack(side="left", padx=(2, 0))
 
         # Scrollable text area
         frm = tk.Frame(popup, bg=BG)
@@ -607,13 +618,20 @@ class DicomNaamApp(tk.Tk):
             _show_element(el)
 
         txt.tag_config("header", foreground=ACCENT, font=("Consolas", 9, "bold"))
-        txt.tag_config("match", background="#ffd700", foreground="#000")
+        txt.tag_config("match",     background="#ffd700", foreground="#000")
+        txt.tag_config("match_cur", background="#ff8c00", foreground="#fff")
         txt.config(state="disabled")
+
+        _matches = []
+        _cur = [0]
 
         def _search(*_):
             txt.tag_remove("match", "1.0", "end")
-            term = search_var.get().strip().upper()
+            txt.tag_remove("match_cur", "1.0", "end")
+            _matches.clear()
+            term = search_var.get().strip()
             if not term:
+                match_lbl.config(text="")
                 return
             start = "1.0"
             while True:
@@ -622,13 +640,34 @@ class DicomNaamApp(tk.Tk):
                     break
                 end = f"{pos}+{len(term)}c"
                 txt.tag_add("match", pos, end)
+                _matches.append((pos, end))
                 start = end
-            # Jump to first match
-            first = txt.tag_ranges("match")
-            if first:
-                txt.see(first[0])
+            _cur[0] = 0
+            _update_cur()
+
+        def _update_cur():
+            txt.tag_remove("match_cur", "1.0", "end")
+            if not _matches:
+                match_lbl.config(text="0 / 0")
+                return
+            match_lbl.config(text=f"{_cur[0]+1} / {len(_matches)}")
+            pos, end = _matches[_cur[0]]
+            txt.tag_add("match_cur", pos, end)
+            txt.see(pos)
+
+        def _nav(direction):
+            if not _matches:
+                return
+            _cur[0] = (_cur[0] + direction) % len(_matches)
+            _update_cur()
+
+        btn_up.config(command=lambda: _nav(-1))
+        btn_down.config(command=lambda: _nav(1))
 
         search_var.trace_add("write", _search)
+        search_entry.bind("<Tab>", lambda e: (_nav(1), "break"))
+        search_entry.bind("<Shift-Tab>", lambda e: (_nav(-1), "break"))
+        popup.bind("<Tab>", lambda e: (_nav(1), "break"))
         search_entry.focus_set()
 
     def _open_viewer(self):

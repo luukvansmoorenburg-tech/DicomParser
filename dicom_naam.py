@@ -233,6 +233,9 @@ PROTOCOL_SLEUTELWOORDEN = [
     ("FIESTA",       "bFFE",          False),   # GE-naam voor SSFP
     ("TRUFI",        "bFFE",          False),   # Siemens-naam voor SSFP
     ("MFFE",         "mFFE",          False),   # multi-echo FFE
+    ("T1FFEСSH",     "T1FFE-SSh",     False),   # Single Shot T1 FFE
+    ("SSHFFE",       "T1FFE-SSh",     False),
+    ("SSHT1FFE",     "T1FFE-SSh",     False),
     ("T2FFE",        "T2FFE",         False),   # T2* gradient echo
     ("T2WFFE",       "T2FFE",         False),   # T2-weighted FFE (bv. AI_T2W_FFE)
     ("T2STAR",       "T2FFE",         False),
@@ -790,20 +793,17 @@ def onderdeel_weging(ds):
             return naam("DIR")
 
         # STIR / FLAIR op basis van TI-drempelwaarden
+        _ir_ssh = etl is not None and etl > 40
         if ti is not None and ti > 0:
             if ti < TI_STIR:
-                return naam("STIR")
+                return naam("STIR-SSh") if _ir_ssh else naam("STIR")
             if ti >= TI_FLAIR:
-                # Single Shot FLAIR: ETL > 40
-                if etl is not None and etl > 70:
-                    return naam("FLAIR-SSh")
-                # TE < 50ms = T1 FLAIR, anders gewone (T2) FLAIR
                 if te is not None and te < 50:
-                    return naam("T1FLAIR")
-                return naam("FLAIR")
+                    return naam("T1FLAIR-SSh") if _ir_ssh else naam("T1FLAIR")
+                return naam("FLAIR-SSh") if _ir_ssh else naam("FLAIR")
 
-        # IR met unknown TI of tussenliggende waarde zonder verdere info
-        return naam("IR")
+        # IR met unknown TI of tussenliggende waarde
+        return naam("IR-SSh") if _ir_ssh else naam("IR")
 
     # --- e0. GRaSE: ScanningSequence bevat zowel GR als SE -------------------
     if is_gr and is_se:
@@ -844,23 +844,31 @@ def onderdeel_weging(ds):
         if any(k in img_type for k in ("DIXON", "WATER", "FAT", "IN_PHASE",
                                         "INPHASE", "OUT_PHASE", "OUTPHASE")):
             return naam("T2-mDix")
-        # SSh (single shot TSE / HASTE): ETL > 40
-        if etl is not None and etl > 70:
-            return "T2SSh"
         # T2-MRCP: extreem lange TE (> 400 ms) op SE/TSE
         if te > 400:
             return "T2-MRCP"
+
+        # Bepaal weging eerst, voeg daarna SSh-suffix toe indien ETL > 40
+        _is_ssh = etl is not None and etl > 40
+
         if te > TE_LANG:
-            return naam("T2")
-        if te < TE_KORT and tr < TR_KORT:
-            return naam("T1")       # korte TE én korte TR -> T1
-        # 3D TSE met korte TR: TE tot 45ms nog T1 (bv. BrainVIEW T1W TR=700 TE=35)
-        if is_3d and tr < TR_KORT and te < 45:
-            return naam("T1")
-        # 30-55 ms of lange TR -> PD
-        if tr > TR_LANG:
-            return naam("PD")
-        # TE kort maar TR niet kort genoeg voor T1, of middellange TE -> unknown
+            weging_se = "T2"
+        elif te < TE_KORT and tr < TR_KORT:
+            weging_se = "T1"
+        elif is_3d and tr < TR_KORT and te < 45:
+            weging_se = "T1"
+        elif tr > TR_LANG:
+            weging_se = "PD"
+        else:
+            weging_se = None   # onbekend
+
+        if _is_ssh:
+            if weging_se:
+                return naam(f"{weging_se}SSh")
+            return naam("unknown")   # SSh maar weging onbekend -> popup
+
+        if weging_se:
+            return naam(weging_se)
         return naam("unknown")
 
     # --- g. Fallback: ScanningSequence ontbreekt of unknown -----------------
@@ -1068,7 +1076,9 @@ def maak_naam(ds):
     _geen_suffix_prefixen = ("DWI", "DTI", "ADC", "DWIBS", "TSEDWI", "IRIS-DWI",
                              "MultiShotDWI", "EPI", "fMRI", "ASL", "3dASL",
                              "IVIM", "unknown", "3Dunknown", "mixed", "3Dmixed",
-                             "T2SSh", "4dFB", "GRaSE", "T2-MRCP", "3DT2-MRCP", "MRS", "SVS",
+                             "T2SSh", "T1SSh", "PDSSh", "FLAIR-SSh", "T1FLAIR-SSh",
+                             "STIR-SSh", "IR-SSh", "T1FFE-SSh",
+                             "4dFB", "GRaSE", "T2-MRCP", "3DT2-MRCP", "MRS", "SVS",
                              "CSI", "T2map", "T1map", "T2*map", "T1rho", "QSM",
                              "SWIp", "PCA", "TOF", "MRA", "MRE")
     _heeft_geen_suffix = any(weging.startswith(p) for p in _geen_suffix_prefixen)
