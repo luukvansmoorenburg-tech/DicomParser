@@ -559,9 +559,18 @@ class DicomNaamApp(tk.Tk):
         popup.geometry("680x580")
         popup.configure(bg=BG)
 
+        # Search bar
+        search_frm = tk.Frame(popup, bg=BG)
+        search_frm.pack(fill="x", padx=12, pady=(8, 0))
+        tk.Label(search_frm, text="Search:", font=FONT, bg=BG, fg=FG).pack(side="left")
+        search_var = tk.StringVar()
+        search_entry = tk.Entry(search_frm, textvariable=search_var, font=FONT,
+                                bg=self._theme["ENTRY"], fg=FG, width=30)
+        search_entry.pack(side="left", padx=6)
+
         # Scrollable text area
         frm = tk.Frame(popup, bg=BG)
-        frm.pack(fill="both", expand=True, padx=12, pady=12)
+        frm.pack(fill="both", expand=True, padx=12, pady=6)
         vsb = ttk.Scrollbar(frm)
         vsb.pack(side="right", fill="y")
         txt = tk.Text(frm, font=("Consolas", 9), bg=BG, fg=FG,
@@ -569,53 +578,58 @@ class DicomNaamApp(tk.Tk):
         txt.pack(fill="both", expand=True)
         vsb.config(command=txt.yview)
 
-        # Key DICOM fields to display
-        fields = [
-            ("--- Patient ---", None),
-            ("PatientName",       ds.get("PatientName", "")),
-            ("PatientID",         ds.get("PatientID", "")),
-            ("PatientBirthDate",  ds.get("PatientBirthDate", "")),
-            ("PatientSex",        ds.get("PatientSex", "")),
-            ("--- Study ---", None),
-            ("StudyDate",         ds.get("StudyDate", "")),
-            ("StudyDescription",  ds.get("StudyDescription", "")),
-            ("StudyInstanceUID",  ds.get("StudyInstanceUID", "")),
-            ("--- Series ---", None),
-            ("SeriesNumber",      ds.get("SeriesNumber", "")),
-            ("SeriesDescription", ds.get("SeriesDescription", "")),
-            ("ProtocolName",      ds.get("ProtocolName", "")),
-            ("Modality",          ds.get("Modality", "")),
-            ("SOPClassUID",       ds.get("SOPClassUID", "")),
-            ("--- Acquisition ---", None),
-            ("MRAcquisitionType", ds.get("MRAcquisitionType", "")),
-            ("ScanningSequence",  ds.get("ScanningSequence", "")),
-            ("SequenceVariant",   ds.get("SequenceVariant", "")),
-            ("RepetitionTime",    ds.get("RepetitionTime", "")),
-            ("EchoTime",          ds.get("EchoTime", "")),
-            ("InversionTime",     ds.get("InversionTime", "")),
-            ("FlipAngle",         ds.get("FlipAngle", "")),
-            ("EchoTrainLength",   ds.get("EchoTrainLength", "")),
-            ("SliceThickness",    ds.get("SliceThickness", "")),
-            ("PixelSpacing",      ds.get("PixelSpacing", "")),
-            ("AcquisitionDuration", ds.get((0x0018, 0x9073), "")),
-            ("NumberOfTemporalPositions", ds.get("NumberOfTemporalPositions", "")),
-            ("TriggerTime",       ds.get("TriggerTime", "")),
-            ("--- Undersampling ---", None),
-            ("ParallelAcquisitionTechnique", ds.get((0x0018, 0x9078), "")),
-            ("Philips (2005,1710)", ds.get((0x2005, 0x1710), "")),
-            ("--- Generated name ---", None),
-            ("New name",          serie_naam),
-            ("Files in series",   str(len(recs))),
-        ]
+        # Generated name summary at top
+        txt.insert("end", f"Generated name: {serie_naam}\n", "header")
+        txt.insert("end", f"Files in series: {len(recs)}\n\n")
 
-        for label, value in fields:
-            if value is None:
-                txt.insert("end", f"\n{label}\n", "header")
+        # All DICOM tags
+        def _show_element(el, indent=0):
+            prefix = "  " * indent
+            tag_str = f"({el.tag.group:04X},{el.tag.element:04X})"
+            keyword = el.keyword if el.keyword else ""
+            if el.VR == "SQ":
+                txt.insert("end", f"{prefix}{tag_str} {el.VR} {keyword}\n", "header")
+                for i, item in enumerate(el.value):
+                    txt.insert("end", f"{prefix}  -- Item {i+1} --\n")
+                    for sub in item:
+                        _show_element(sub, indent + 2)
             else:
-                txt.insert("end", f"  {label:<35} {value}\n")
+                try:
+                    val = str(el.value)
+                    if len(val) > 120:
+                        val = val[:120] + "…"
+                except Exception:
+                    val = "<unreadable>"
+                txt.insert("end",
+                    f"{prefix}{tag_str} {el.VR:<3} {keyword:<40} {val}\n")
+
+        for el in ds:
+            _show_element(el)
 
         txt.tag_config("header", foreground=ACCENT, font=("Consolas", 9, "bold"))
+        txt.tag_config("match", background="#ffd700", foreground="#000")
         txt.config(state="disabled")
+
+        def _search(*_):
+            txt.tag_remove("match", "1.0", "end")
+            term = search_var.get().strip().upper()
+            if not term:
+                return
+            start = "1.0"
+            while True:
+                pos = txt.search(term, start, stopindex="end", nocase=True)
+                if not pos:
+                    break
+                end = f"{pos}+{len(term)}c"
+                txt.tag_add("match", pos, end)
+                start = end
+            # Jump to first match
+            first = txt.tag_ranges("match")
+            if first:
+                txt.see(first[0])
+
+        search_var.trace_add("write", _search)
+        search_entry.focus_set()
 
     def _open_viewer(self):
         """Open a slice viewer for the selected series."""
