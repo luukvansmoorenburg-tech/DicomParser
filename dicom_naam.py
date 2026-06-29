@@ -221,6 +221,9 @@ PROTOCOL_SLEUTELWOORDEN = [
     ("3DSTIR",       "STIR",          True),
     ("STIR",         "STIR",          False),
     ("IRTFE",        "T1TFE",         True),    # IR-prepped TFE (voor IR!)
+    ("PDIR",         "PD-IR",         False),   # PD + IR combinatie (bv. COR PD IR)
+    ("T1IR",         "T1-IR",         False),   # T1 + IR combinatie
+    ("T2IR",         "T2-IR",         False),   # T2 + IR combinatie
     ("IR",           "IR",            False),   # overige inversion recovery
 
     # --- Dixon -------------------------------------------------------------------
@@ -496,6 +499,14 @@ def onderdeel_weging(ds):
     series_bound = series_raw.replace(" ", "").replace("-", "").upper()
     if series_bound.startswith("WIP"):
         series_bound = series_bound[3:]
+
+    # Gecombineerde weging + IR (bv. PD IR, T1 IR, T2 IR)
+    _ir_pat = r'(?<![A-Z0-9])IR(?![A-Z0-9])'
+    if re.search(_ir_pat, protocol_bound) or re.search(_ir_pat, series_bound):
+        for weging_prefix, output in (("PD", "PD-IR"), ("T1", "T1-IR"), ("T2", "T2-IR")):
+            _w_pat = r'(?<![A-Z0-9])' + weging_prefix + r'(?![A-Z0-9])'
+            if (re.search(_w_pat, protocol_bound) or re.search(_w_pat, series_bound)):
+                return naam(output)
 
     # SURVEY / LOCALIZER -> originele naam behouden (EERSTE check, vóór VIEW!)
     _survey_trefwoorden = ("SURVEY", "PLANSCAN", "LOCALIZER", "SCOUT", "MOBIVIEW",
