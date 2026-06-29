@@ -19,6 +19,8 @@ import json
 import dicom_naam as dn
 import pydicom
 
+APP_VERSION = "0.11"   # auto-incremented by pre-commit hook (0.01 per commit)
+
 # Config file stored next to the exe (or script)
 _CONFIG_PAD = os.path.join(os.path.dirname(sys.executable
               if getattr(sys, "frozen", False) else __file__),
@@ -71,7 +73,7 @@ FONT_H   = ("Segoe UI", 13, "bold")
 class DicomNaamApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("DICOM Sequence Name Generator")
+        self.title(f"NaamGenerator v{APP_VERSION}")
         self.resizable(True, True)
         self.minsize(700, 420)
         self._dark = False      # start in light mode
