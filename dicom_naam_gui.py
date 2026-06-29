@@ -922,15 +922,25 @@ class DicomNaamApp(tk.Tk):
         thread.start()
 
     def _schrijf_inplace_thread(self, resultaten):
+        import concurrent.futures, threading
         totaal = len(resultaten)
-        for i, r in enumerate(resultaten):
-            self.after(0, self._update_voortgang, i + 1, totaal, r["bestand"])
+        teller = threading.Lock()
+        gedaan = [0]
+
+        def schrijf_een(r):
             try:
                 ds = pydicom.dcmread(r["bestand"], force=True)
                 ds.ProtocolName = dn._veilige_mapnaam(r["naam"])
-                ds.save_as(r["bestand"])   # overwrite in place
+                ds.save_as(r["bestand"])
             except Exception:
                 pass
+            with teller:
+                gedaan[0] += 1
+                self.after(0, self._update_voortgang, gedaan[0], totaal, r["bestand"])
+
+        workers = min(8, max(1, totaal // 50))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+            list(pool.map(schrijf_een, resultaten))
 
         self.after(0, lambda: messagebox.showinfo(
             "Done",
@@ -981,8 +991,11 @@ class DicomNaamApp(tk.Tk):
             except Exception:
                 pass
 
-        for i, r in enumerate(resultaten):
-            self.after(0, self._update_voortgang, i + 1, totaal, r["bestand"])
+        import concurrent.futures, threading as _threading
+        teller2 = _threading.Lock()
+        gedaan2 = [0]
+
+        def kopieer_een(r):
             try:
                 rel  = os.path.relpath(r["bestand"], bron)
                 doel = os.path.join(output, rel)
@@ -992,6 +1005,13 @@ class DicomNaamApp(tk.Tk):
                 ds.save_as(doel)
             except Exception:
                 pass
+            with teller2:
+                gedaan2[0] += 1
+                self.after(0, self._update_voortgang, gedaan2[0], totaal, r["bestand"])
+
+        workers = min(8, max(1, totaal // 50))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+            list(pool.map(kopieer_een, resultaten))
 
         self.after(0, lambda: messagebox.showinfo(
             "Done",
